@@ -91,7 +91,7 @@ else:
         with col4:
             unit = st.text_input(f"Unit", key=f"i_unit_{i}")
         if name:
-            items.append({'name': name, 'description': desc, 'quantity': qty, 'unit': unit})
+            items.append({'item_name': name, 'description': desc, 'quantity': qty, 'unit': unit})
     
     st.session_state['items'] = items
 
