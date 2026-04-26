@@ -1,0 +1,53 @@
+name: RFQ Email Automation - 24/7
+
+on:
+  schedule:
+    # Runs every 30 minutes (24/7)
+    - cron: '*/30 * * * *'
+  workflow_dispatch:  # Allow manual trigger from GitHub UI
+
+jobs:
+  email-automation:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v3
+    
+    - name: Set up Python
+      uses: actions/setup-python@v4
+      with:
+        python-version: '3.11'
+    
+    - name: Install dependencies
+      run: |
+        python -m pip install --upgrade pip
+        pip install google-generativeai beautifulsoup4 pandas openpyxl python-dotenv PyPDF2 supabase
+    
+    - name: Check for new email responses
+      env:
+        EMAIL_ADDRESS: ${{ secrets.EMAIL_ADDRESS }}
+        EMAIL_PASSWORD: ${{ secrets.EMAIL_PASSWORD }}
+        GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+        SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+        SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
+      run: |
+        echo "🔍 Checking for new vendor responses..."
+        python automation_worker.py check-emails
+    
+    - name: Send follow-up reminders
+      env:
+        EMAIL_ADDRESS: ${{ secrets.EMAIL_ADDRESS }}
+        EMAIL_PASSWORD: ${{ secrets.EMAIL_PASSWORD }}
+        SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+        SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
+      run: |
+        echo "📧 Sending follow-up reminders..."
+        python automation_worker.py send-followups
+    
+    - name: Report status
+      if: always()
+      run: |
+        echo "✅ Automation cycle completed"
+        echo "Next run in 30 minutes"

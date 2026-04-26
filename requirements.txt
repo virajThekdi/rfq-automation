@@ -1,0 +1,35 @@
+# RFQ Automation System - Streamlit Version
+# Python 3.11+ recommended
+
+# Streamlit
+streamlit>=1.32.0
+
+# Database
+sqlite3  # Built-in to Python
+
+# Data Processing
+pandas>=2.2.0
+openpyxl>=3.1.5
+
+# Email
+# smtplib, imaplib, email - built-in to Python
+
+# HTML Parsing
+beautifulsoup4>=4.12.3
+lxml>=5.1.0
+
+# AI Providers
+google-generativeai>=0.8.0
+
+# Background Scheduler
+APScheduler>=3.10.0
+
+# Environment
+python-dotenv>=1.0.1
+
+# Optional: Multi-AI Fallback
+# openai>=1.0.0
+# requests>=2.31.0
+
+# Optional: PDF Support
+# PyPDF2>=3.0.0
