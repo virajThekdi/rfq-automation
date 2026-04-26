@@ -16,6 +16,19 @@ st.title("📤 Create New RFQ")
 db = DatabaseManager()
 load_dotenv()
 
+# Helper function to get credentials from either .env or st.secrets
+def get_credential(key):
+    """Get credential from .env (local) or st.secrets (Streamlit Cloud)"""
+    # Try environment variable first (local development)
+    value = os.getenv(key)
+    if value:
+        return value
+    # Fall back to Streamlit secrets (Streamlit Cloud)
+    try:
+        return st.secrets.get(key)
+    except:
+        return None
+
 # Upload method
 upload_method = st.radio("Choose input method:", ["Upload Excel File", "Manual Entry"])
 
@@ -38,170 +51,143 @@ if upload_method == "Upload Excel File":
             # Clean up temp file
             os.unlink(temp_path)
             
-            st.success(f"✅ Loaded {len(vendors_list)} vendors and {len(items_list)} items")
-            
-            col1, col2 = st.columns(2)
-            with col1:
-                st.write("**Vendors:**")
-                st.dataframe(pd.DataFrame(vendors_list))
-            with col2:
-                st.write("**RFQ Items:**")
-                st.dataframe(pd.DataFrame(items_list))
-            
-            # Data is already in list of dicts format - no need to call .to_dict()
+            # Store in session
             st.session_state['vendors'] = vendors_list
             st.session_state['items'] = items_list
             
+            st.success(f"✅ Loaded {len(vendors_list)} vendors and {len(items_list)} items")
+            
         except Exception as e:
-            st.error(f"❌ Error reading Excel: {e}")
+            st.error(f"Error reading Excel: {e}")
+
 else:
-    st.subheader("✏️ Manual Entry")
+    st.subheader("✍️ Manual Entry")
     
     # Vendors input
-    st.write("**Add Vendors:**")
-    num_vendors = st.number_input("Number of vendors:", min_value=1, max_value=50, value=3)
+    st.write("**Step 1: Add Vendors**")
+    col1, col2 = st.columns(2)
+    with col1:
+        vendor_name = st.text_input("Vendor Name")
+    with col2:
+        vendor_email = st.text_input("Vendor Email")
     
-    vendors = []
-    for i in range(num_vendors):
-        col1, col2 = st.columns(2)
-        with col1:
-            name = st.text_input(f"Vendor {i+1} Name", key=f"v_name_{i}")
-        with col2:
-            email = st.text_input(f"Vendor {i+1} Email", key=f"v_email_{i}")
-        if name and email:
-            vendors.append({'name': name, 'email': email})
+    if st.button("➕ Add Vendor"):
+        if vendor_name and vendor_email:
+            if 'vendors' not in st.session_state:
+                st.session_state['vendors'] = []
+            st.session_state['vendors'].append({
+                'name': vendor_name,
+                'email': vendor_email
+            })
+            st.success(f"✅ Added {vendor_name}")
+            st.rerun()
+        else:
+            st.error("Please fill both fields")
     
-    st.session_state['vendors'] = vendors
+    # Display vendors
+    if 'vendors' in st.session_state and st.session_state['vendors']:
+        st.write(f"**Current Vendors ({len(st.session_state['vendors'])}):**")
+        for idx, v in enumerate(st.session_state['vendors']):
+            col1, col2, col3 = st.columns([2, 2, 1])
+            col1.write(v['name'])
+            col2.write(v['email'])
+            if col3.button("🗑️", key=f"del_vendor_{idx}"):
+                st.session_state['vendors'].pop(idx)
+                st.rerun()
     
     st.markdown("---")
     
     # Items input
-    st.write("**Add Items:**")
-    num_items = st.number_input("Number of items:", min_value=1, max_value=50, value=3)
+    st.write("**Step 2: Add Items**")
+    col1, col2, col3, col4 = st.columns(4)
+    with col1:
+        item_name = st.text_input("Item Name")
+    with col2:
+        item_desc = st.text_input("Description")
+    with col3:
+        item_qty = st.number_input("Quantity", min_value=1, value=1)
+    with col4:
+        item_unit = st.text_input("Unit", value="pcs")
     
-    items = []
-    for i in range(num_items):
-        col1, col2, col3, col4 = st.columns(4)
-        with col1:
-            name = st.text_input(f"Item {i+1}", key=f"i_name_{i}")
-        with col2:
-            desc = st.text_input(f"Description", key=f"i_desc_{i}")
-        with col3:
-            qty = st.text_input(f"Quantity", key=f"i_qty_{i}")
-        with col4:
-            unit = st.text_input(f"Unit", key=f"i_unit_{i}")
-        if name:
-            items.append({'item_name': name, 'description': desc, 'quantity': qty, 'unit': unit})
+    if st.button("➕ Add Item"):
+        if item_name:
+            if 'items' not in st.session_state:
+                st.session_state['items'] = []
+            st.session_state['items'].append({
+                'item_name': item_name,  # Use 'item_name' key for consistency
+                'description': item_desc,
+                'quantity': item_qty,
+                'unit': item_unit
+            })
+            st.success(f"✅ Added {item_name}")
+            st.rerun()
+        else:
+            st.error("Please fill item name")
     
-    st.session_state['items'] = items
+    # Display items
+    if 'items' in st.session_state and st.session_state['items']:
+        st.write(f"**Current Items ({len(st.session_state['items'])}):**")
+        items_df = pd.DataFrame(st.session_state['items'])
+        
+        # Add delete button for each row
+        for idx, item in enumerate(st.session_state['items']):
+            col1, col2, col3, col4, col5 = st.columns([2, 2, 1, 1, 1])
+            col1.write(item.get('item_name', item.get('name', '')))
+            col2.write(item['description'])
+            col3.write(str(item['quantity']))
+            col4.write(item['unit'])
+            if col5.button("🗑️", key=f"del_item_{idx}"):
+                st.session_state['items'].pop(idx)
+                st.rerun()
 
 st.markdown("---")
 
-# Email details
-st.subheader("📬 Email Configuration")
+# RFQ Details
+st.subheader("📋 RFQ Details")
 
 col1, col2 = st.columns(2)
 with col1:
-    subject = st.text_input("Email Subject:", value="RFQ Request - Quotation Needed")
-    body = st.text_area("Email Body:", value="Please provide your quotation for the following items:", height=150)
+    subject = st.text_input("Subject/Title", value="Request for Quotation")
 with col2:
-    footer = st.text_area("Email Footer:", value="Looking forward to your response.\n\nBest regards", height=150)
+    deadline_days = st.number_input("Response Deadline (days)", min_value=1, max_value=30, value=7)
 
+body = st.text_area("RFQ Message Body", 
+                    value="Dear Vendor,\n\nWe are requesting quotations for the following items. Please provide your best price and delivery timeline.",
+                    height=150)
+
+footer = st.text_area("Email Footer/Additional Info",
+                     value="Please submit your quotation by the deadline. For questions, contact us at this email.",
+                     height=100)
+
+# Follow-up settings
 st.markdown("---")
+st.subheader("🔄 Follow-up Settings (Optional)")
+st.caption("Automatically send reminder emails to vendors who haven't responded")
 
-# Deadline and Follow-ups (Enhanced UI)
-st.subheader("⏰ Deadline & Automated Follow-ups")
-
-col1, col2 = st.columns([2, 1])
-
+col1, col2 = st.columns(2)
 with col1:
-    st.write("**Deadline Settings:**")
-    deadline_days = st.number_input("Deadline (days from now):", min_value=1, max_value=30, value=3)
-    deadline_date = datetime.now() + timedelta(days=deadline_days)
-    st.caption(f"📅 Deadline will be: {deadline_date.strftime('%B %d, %Y at %I:%M %p')}")
-
+    followup_count = st.number_input("Number of follow-ups", min_value=0, max_value=5, value=2,
+                                    help="How many reminder emails to send (0 = no follow-ups)")
 with col2:
-    st.write("**Quick Presets:**")
-    if st.button("⚡ 24 hours", use_container_width=True):
-        deadline_days = 1
-    if st.button("📅 3 days", use_container_width=True):
-        deadline_days = 3
-    if st.button("📆 1 week", use_container_width=True):
-        deadline_days = 7
+    followup_interval = st.number_input("Hours between follow-ups", min_value=1, max_value=168, value=24,
+                                       help="Time to wait before sending next reminder")
 
-st.markdown("---")
+if followup_count > 0:
+    st.info(f"📧 Will send up to {followup_count} reminders, {followup_interval} hours apart")
+    st.caption("Example: If deadline is 7 days and interval is 24h, reminders will be sent on days 1, 2, 3... until vendor responds")
 
-# Follow-up configuration with better UI
-st.write("### 🔄 Automatic Follow-up Reminders")
-
-enable_followups = st.checkbox("Enable automatic follow-up reminders to pending vendors", value=True)
-
-if enable_followups:
-    col1, col2 = st.columns(2)
-    
-    with col1:
-        st.write("**How many reminders?**")
-        followup_count = st.select_slider(
-            "Number of follow-ups:",
-            options=[0, 1, 2, 3, 4, 5],
-            value=2,
-            help="System will send this many reminders to vendors who haven't responded"
-        )
-        
-        if followup_count > 0:
-            st.success(f"✅ Will send up to {followup_count} reminder(s) per vendor")
-        else:
-            st.info("ℹ️ No follow-ups will be sent")
-    
-    with col2:
-        st.write("**How often to remind?**")
-        interval_option = st.radio(
-            "Send reminders every:",
-            ["12 hours", "24 hours (1 day)", "48 hours (2 days)", "72 hours (3 days)"],
-            index=1
-        )
-        
-        # Convert to hours
-        interval_map = {
-            "12 hours": 12,
-            "24 hours (1 day)": 24,
-            "48 hours (2 days)": 48,
-            "72 hours (3 days)": 72
-        }
-        followup_interval = interval_map[interval_option]
-        
-        st.info(f"⏱️ Reminders sent every {followup_interval} hours")
-    
-    # Show follow-up timeline
-    if followup_count > 0:
-        st.write("**Follow-up Timeline:**")
-        timeline_html = "<div style='background-color: #f0f0f0; padding: 15px; border-radius: 5px;'>"
-        timeline_html += f"<strong>Initial RFQ:</strong> Sent immediately<br>"
-        
-        for i in range(1, followup_count + 1):
-            hours_from_now = followup_interval * i
-            reminder_time = datetime.now() + timedelta(hours=hours_from_now)
-            timeline_html += f"<strong>Reminder #{i}:</strong> {hours_from_now}h later ({reminder_time.strftime('%b %d, %I:%M %p')})<br>"
-        
-        timeline_html += "</div>"
-        st.markdown(timeline_html, unsafe_allow_html=True)
-else:
-    followup_count = 0
-    followup_interval = 0
-    st.warning("⚠️ Follow-ups disabled. You'll need to manually check for responses.")
-
+# Calculate deadline
 deadline_minutes = deadline_days * 24 * 60
 
 st.markdown("---")
 
-# Send button
-st.write("### 🚀 Ready to Send?")
-
-col1, col2 = st.columns([2, 1])
-
+# Submit button
+col1, col2 = st.columns(2)
 with col1:
-    if 'vendors' in st.session_state and 'items' in st.session_state:
-        st.success(f"✅ Ready: {len(st.session_state.get('vendors', []))} vendors, {len(st.session_state.get('items', []))} items")
+    can_create = ('vendors' in st.session_state and st.session_state['vendors'] and 
+                  'items' in st.session_state and st.session_state['items'])
+    if can_create:
+        st.success(f"✅ Ready to create: {len(st.session_state['vendors'])} vendors, {len(st.session_state['items'])} items")
     else:
         st.warning("⚠️ Please add vendors and items first")
 
@@ -214,9 +200,40 @@ if st.button("🚀 Create & Send RFQ", type="primary", use_container_width=True)
     elif 'items' not in st.session_state or not st.session_state['items']:
         st.error("❌ Please add items first!")
     else:
+        rfq_id = None  # Track RFQ ID for rollback
+        
         try:
+            # STEP 1: Validate and TEST email credentials if sending now
+            if send_now:
+                sender_email = get_credential('EMAIL_ADDRESS')
+                sender_password = get_credential('EMAIL_PASSWORD')
+                
+                if not sender_email or not sender_password:
+                    st.error("❌ Email credentials not found!")
+                    st.warning("⚠️ For local: Add credentials to .env file")
+                    st.warning("⚠️ For Streamlit Cloud: Add credentials in app settings → Secrets")
+                    st.info("💡 Current environment: " + ("Local" if os.getenv('EMAIL_ADDRESS') else "Streamlit Cloud"))
+                    st.stop()
+                
+                # NEW: Test email connection BEFORE creating RFQ
+                with st.spinner("🔍 Testing email connection..."):
+                    connection_test = email_sender.test_email_connection(sender_email, sender_password)
+                    
+                    if not connection_test:
+                        st.error("❌ Email connection test FAILED!")
+                        st.error("🚫 RFQ will NOT be created until email credentials are valid")
+                        st.warning("⚠️ Possible issues:")
+                        st.warning("  • Wrong email address")
+                        st.warning("  • Wrong app password")
+                        st.warning("  • 2-Step verification not enabled")
+                        st.warning("  • App password not generated from Google Account settings")
+                        st.info("💡 Go to Settings page to update credentials")
+                        st.stop()  # STOP HERE - Don't create RFQ
+                    
+                    st.success("✅ Email connection verified!")
+            
+            # STEP 2: Create RFQ in database (only if email test passed)
             with st.spinner("Creating RFQ..."):
-                # Create RFQ in database
                 rfq_id = db.create_rfq(
                     subject=subject,
                     body=body,
@@ -232,61 +249,74 @@ if st.button("🚀 Create & Send RFQ", type="primary", use_container_width=True)
                 
                 st.success(f"✅ RFQ #{rfq_id} created successfully!")
             
-            # Send emails if requested
+            # STEP 3: Send emails if requested
             if send_now:
-                with st.spinner("📧 Sending emails..."):
-                    sender_email = os.getenv('EMAIL_ADDRESS')
-                    sender_password = os.getenv('EMAIL_PASSWORD')
+                with st.spinner("📧 Sending emails to vendors..."):
+                    success_count = 0
+                    failed_count = 0
+                    failed_vendors = []
                     
-                    if not sender_email or not sender_password:
-                        st.error("❌ Email credentials not found in .env file")
-                    else:
-                        # Generate and send emails
-                        success_count = 0
-                        failed_count = 0
-                        
-                        for vendor in st.session_state['vendors']:
-                            try:
-                                # Generate email HTML
-                                html_email = email_generator.generate_rfq_email(
-                                    vendor_name=vendor['name'],
-                                    subject=subject,
-                                    body=body,
-                                    items=st.session_state['items'],
-                                    footer=footer
-                                )
-                                
-                                # Send email
-                                success = email_sender.send_email(
-                                    sender_email=sender_email,
-                                    sender_password=sender_password,
-                                    recipient_email=vendor['email'],
-                                    subject=subject,
-                                    html_body=html_email
-                                )
-                                
-                                if success:
-                                    success_count += 1
-                                else:
-                                    failed_count += 1
-                            except Exception as e:
-                                st.warning(f"⚠️ Failed to send to {vendor['name']}: {e}")
+                    for vendor in st.session_state['vendors']:
+                        try:
+                            # Generate email HTML
+                            html_email = email_generator.generate_rfq_email(
+                                vendor_name=vendor['name'],
+                                subject=subject,
+                                body=body,
+                                items=st.session_state['items'],
+                                footer=footer
+                            )
+                            
+                            # Send email
+                            success = email_sender.send_email(
+                                sender_email=sender_email,
+                                sender_password=sender_password,
+                                recipient_email=vendor['email'],
+                                subject=subject,
+                                html_body=html_email
+                            )
+                            
+                            if success:
+                                success_count += 1
+                            else:
                                 failed_count += 1
-                        
-                        # Summary
-                        if success_count > 0:
-                            st.success(f"✅ Emails sent: {success_count}/{len(st.session_state['vendors'])}")
-                        if failed_count > 0:
-                            st.warning(f"⚠️ Failed: {failed_count}")
+                                failed_vendors.append(vendor['name'])
+                        except Exception as e:
+                            st.warning(f"⚠️ Failed to send to {vendor['name']}: {e}")
+                            failed_count += 1
+                            failed_vendors.append(vendor['name'])
+                    
+                    # STEP 4: Check results and ROLLBACK if complete failure
+                    if success_count == 0 and failed_count > 0:
+                        # ALL emails failed - DELETE the RFQ
+                        st.error(f"❌ ALL emails failed to send!")
+                        with st.spinner("🔄 Rolling back - deleting RFQ..."):
+                            db.delete_rfq(rfq_id)
+                            st.error("🚫 RFQ has been deleted because no emails were sent")
+                            st.warning("⚠️ Please check your email settings and try again")
+                            st.info("💡 Even though connection test passed, actual sending failed. This could be due to:")
+                            st.info("  • Rate limiting by Gmail")
+                            st.info("  • Invalid recipient addresses")
+                            st.info("  • Network issues")
+                            st.stop()
+                    
+                    # STEP 5: Show results for successful/partial cases
+                    if success_count == len(st.session_state['vendors']):
+                        # All emails sent successfully
+                        st.success(f"✅ Perfect! All {success_count} emails sent successfully!")
+                        st.balloons()
+                    elif success_count > 0:
+                        # Partial success
+                        st.warning(f"⚠️ Partial success: {success_count} sent, {failed_count} failed")
+                        st.error(f"Failed vendors: {', '.join(failed_vendors)}")
+                        st.info("💡 Tip: Go to 'Active RFQs' page to resend to failed vendors")
             else:
-                st.info("📧 Emails will be sent later via the Follow-ups page")
+                st.info("📧 RFQ created! Emails will be sent later via the 'Active RFQs' page")
             
             # Show follow-up info
             if followup_count > 0:
                 st.info(f"🔄 Automatic follow-ups enabled: {followup_count} reminders every {followup_interval} hours")
-                st.caption("Go to 'Active RFQs' page to manually send follow-ups, or they will be sent automatically by the scheduler")
-            
-            st.balloons()
+                st.caption("Follow-ups will be sent automatically by GitHub Actions every 30 minutes")
             
             # Clear session
             if 'vendors' in st.session_state:
@@ -295,4 +325,16 @@ if st.button("🚀 Create & Send RFQ", type="primary", use_container_width=True)
                 del st.session_state['items']
                 
         except Exception as e:
-            st.error(f"❌ Error creating RFQ: {e}")
+            st.error(f"❌ Error: {e}")
+            # If RFQ was created but something went wrong, try to clean up
+            if rfq_id:
+                try:
+                    st.warning(f"⚠️ Attempting to delete RFQ #{rfq_id} due to error...")
+                    db.delete_rfq(rfq_id)
+                    st.info("🔄 RFQ deleted")
+                except:
+                    st.error(f"⚠️ Could not delete RFQ #{rfq_id}. Please delete manually from Active RFQs page.")
+            
+            with st.expander("Show Error Details"):
+                import traceback
+                st.code(traceback.format_exc())

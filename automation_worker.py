@@ -20,6 +20,17 @@ from modules.email_monitor import check_new_responses
 from modules.followup_manager import check_all_active_rfqs
 
 
+def get_credential(key):
+    """
+    Get credential from environment variables (GitHub Actions secrets).
+    GitHub Actions injects secrets as environment variables.
+    """
+    value = os.getenv(key)
+    if not value:
+        print(f"❌ WARNING: {key} not found in environment variables")
+    return value
+
+
 def check_emails():
     """Check for new vendor responses"""
     print(f"\n{'='*70}")
@@ -29,12 +40,13 @@ def check_emails():
     try:
         db = DatabaseManager()
         
-        # Get email credentials
-        sender_email = os.getenv('EMAIL_ADDRESS')
-        sender_password = os.getenv('EMAIL_PASSWORD')
+        # Get email credentials from environment (GitHub Actions secrets)
+        sender_email = get_credential('EMAIL_ADDRESS')
+        sender_password = get_credential('EMAIL_PASSWORD')
         
         if not sender_email or not sender_password:
             print("❌ ERROR: Email credentials not found in environment")
+            print("💡 Make sure EMAIL_ADDRESS and EMAIL_PASSWORD are set in GitHub Actions secrets")
             return
         
         # Get all active RFQs
@@ -48,33 +60,40 @@ def check_emails():
         
         total_new_responses = 0
         
-        # Check emails for each active RFQ
         for rfq in active_rfqs:
-            rfq_id = rfq['id']
-            rfq_subject = rfq['subject']
+            print(f"\n  📤 RFQ #{rfq['id']}: {rfq['subject']}")
             
-            print(f"\n🔎 Checking RFQ #{rfq_id}: {rfq_subject}")
+            # Get vendors for this RFQ
+            vendors = db.get_vendors(rfq['id'])
+            pending = [v for v in vendors if v['response_status'] == 'pending']
+            
+            if not pending:
+                print(f"    ✅ All vendors responded")
+                continue
+            
+            print(f"    ⏳ Checking {len(pending)} pending vendor(s)...")
             
             # Check for new responses
-            result = check_new_responses(
-                db_manager=db,
-                rfq_id=rfq_id,
-                sender_email=sender_email,
-                sender_password=sender_password
-            )
+            for vendor in pending:
+                result = check_new_responses(
+                    db_manager=db,
+                    rfq_id=rfq['id'],
+                    vendor_email=vendor['email'],
+                    email_address=sender_email,
+                    email_password=sender_password
+                )
+                
+                if result['new_responses'] > 0:
+                    total_new_responses += result['new_responses']
+                    print(f"    📧 New response from {vendor['name']}!")
+        
+        if total_new_responses > 0:
+            print(f"\n✅ Email check complete: {total_new_responses} new response(s) found")
+        else:
+            print(f"\nℹ️ Email check complete: No new responses")
             
-            if result and result['success_count'] > 0:
-                print(f"   ✅ Found {result['success_count']} new response(s)")
-                total_new_responses += result['success_count']
-            else:
-                print(f"   ℹ️ No new responses")
-        
-        print(f"\n{'='*70}")
-        print(f"✅ Email check complete: {total_new_responses} new response(s) found")
-        print(f"{'='*70}\n")
-        
     except Exception as e:
-        print(f"❌ ERROR during email check: {e}")
+        print(f"❌ Email check failed: {e}")
         import traceback
         traceback.print_exc()
 
@@ -82,66 +101,80 @@ def check_emails():
 def send_followups():
     """Send follow-up reminders to pending vendors"""
     print(f"\n{'='*70}")
-    print(f"📧 FOLLOW-UP CHECK - {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
+    print(f"🔄 FOLLOW-UP CHECK - {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
     print(f"{'='*70}\n")
     
     try:
         db = DatabaseManager()
         
-        # Get email credentials
-        sender_email = os.getenv('EMAIL_ADDRESS')
-        sender_password = os.getenv('EMAIL_PASSWORD')
+        # Get email credentials from environment (GitHub Actions secrets)
+        sender_email = get_credential('EMAIL_ADDRESS')
+        sender_password = get_credential('EMAIL_PASSWORD')
         
         if not sender_email or not sender_password:
             print("❌ ERROR: Email credentials not found in environment")
+            print("💡 Make sure EMAIL_ADDRESS and EMAIL_PASSWORD are set in GitHub Actions secrets")
             return
         
         # Check all active RFQs for follow-ups
-        result = check_all_active_rfqs(db, sender_email, sender_password)
+        results = check_all_active_rfqs(
+            db_manager=db,
+            sender_email=sender_email,
+            sender_password=sender_password
+        )
         
-        if result['total_sent'] > 0:
-            print(f"\n✅ Sent {result['total_sent']} follow-up email(s)")
-            print(f"   • RFQs processed: {result['rfqs_processed']}")
+        if results['total_followups_sent'] > 0:
+            print(f"\n✅ Follow-up check complete:")
+            print(f"    📧 {results['total_followups_sent']} follow-up(s) sent")
+            print(f"    📋 {results['rfqs_processed']} RFQ(s) processed")
+            
+            # Show details
+            for rfq_result in results['rfq_results']:
+                if rfq_result['result']['followups_sent'] > 0:
+                    print(f"\n    RFQ #{rfq_result['rfq_id']}:")
+                    print(f"      • Sent to: {', '.join(rfq_result['result']['vendors_sent'])}")
         else:
-            print("ℹ️ No follow-ups needed at this time")
-            if result['rfqs_processed'] > 0:
-                print(f"   • Checked {result['rfqs_processed']} RFQ(s)")
-        
-        print(f"\n{'='*70}")
-        print(f"✅ Follow-up check complete")
-        print(f"{'='*70}\n")
-        
+            print(f"\nℹ️ Follow-up check complete: No follow-ups needed at this time")
+            
     except Exception as e:
-        print(f"❌ ERROR during follow-up check: {e}")
+        print(f"❌ Follow-up check failed: {e}")
         import traceback
         traceback.print_exc()
 
 
 def main():
     """Main automation worker"""
-    if len(sys.argv) < 2:
-        print("Usage: python automation_worker.py [check-emails|send-followups|both]")
+    print("\n" + "="*70)
+    print("🤖 RFQ AUTOMATION WORKER STARTED")
+    print("="*70)
+    
+    # Verify environment
+    print("\n🔧 Checking environment...")
+    print(f"  • EMAIL_ADDRESS: {'✅ Found' if os.getenv('EMAIL_ADDRESS') else '❌ Missing'}")
+    print(f"  • EMAIL_PASSWORD: {'✅ Found' if os.getenv('EMAIL_PASSWORD') else '❌ Missing'}")
+    print(f"  • SUPABASE_URL: {'✅ Found' if os.getenv('SUPABASE_URL') else '❌ Missing'}")
+    print(f"  • SUPABASE_KEY: {'✅ Found' if os.getenv('SUPABASE_KEY') else '❌ Missing'}")
+    print(f"  • GEMINI_API_KEY: {'✅ Found' if os.getenv('GEMINI_API_KEY') else '❌ Missing'}")
+    
+    missing = []
+    if not os.getenv('EMAIL_ADDRESS'): missing.append('EMAIL_ADDRESS')
+    if not os.getenv('EMAIL_PASSWORD'): missing.append('EMAIL_PASSWORD')
+    if not os.getenv('SUPABASE_URL'): missing.append('SUPABASE_URL')
+    if not os.getenv('SUPABASE_KEY'): missing.append('SUPABASE_KEY')
+    if not os.getenv('GEMINI_API_KEY'): missing.append('GEMINI_API_KEY')
+    
+    if missing:
+        print(f"\n❌ ERROR: Missing required environment variables: {', '.join(missing)}")
+        print("💡 Make sure all secrets are configured in GitHub Actions settings")
         sys.exit(1)
     
-    command = sys.argv[1].lower()
+    # Run both tasks
+    check_emails()
+    send_followups()
     
-    print(f"\n🤖 RFQ AUTOMATION WORKER STARTED")
-    print(f"⏰ Time: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
-    print(f"🎯 Command: {command}\n")
-    
-    if command == "check-emails":
-        check_emails()
-    elif command == "send-followups":
-        send_followups()
-    elif command == "both":
-        check_emails()
-        send_followups()
-    else:
-        print(f"❌ Unknown command: {command}")
-        print("Valid commands: check-emails, send-followups, both")
-        sys.exit(1)
-    
-    print(f"🏁 Worker finished at {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n")
+    print("\n" + "="*70)
+    print("✅ AUTOMATION WORKER COMPLETED")
+    print("="*70 + "\n")
 
 
 if __name__ == "__main__":

@@ -15,6 +15,19 @@ db = DatabaseManager()
 load_dotenv()
 active_rfqs = db.get_active_rfqs()
 
+# Helper function to get credentials from either .env or st.secrets
+def get_credential(key):
+    """Get credential from .env (local) or st.secrets (Streamlit Cloud)"""
+    # Try environment variable first (local development)
+    value = os.getenv(key)
+    if value:
+        return value
+    # Fall back to Streamlit secrets (Streamlit Cloud)
+    try:
+        return st.secrets.get(key)
+    except:
+        return None
+
 if not active_rfqs:
     st.info("📬 No active RFQs. Create your first RFQ!")
     if st.button("➕ Create RFQ"):
@@ -30,11 +43,12 @@ else:
                 try:
                     from modules import followup_manager
                     
-                    sender_email = os.getenv('EMAIL_ADDRESS')
-                    sender_password = os.getenv('EMAIL_PASSWORD')
+                    sender_email = get_credential('EMAIL_ADDRESS')
+                    sender_password = get_credential('EMAIL_PASSWORD')
                     
                     if not sender_email or not sender_password:
-                        st.error("❌ Email credentials not found in .env")
+                        st.error("❌ Email credentials not found. Please configure them in Settings.")
+                        st.info("💡 Credentials should be in .env file (local) or Streamlit secrets (cloud)")
                     else:
                         results = followup_manager.check_all_active_rfqs(
                             db_manager=db,
@@ -108,11 +122,11 @@ else:
                             try:
                                 from modules import followup_manager
                                 
-                                sender_email = os.getenv('EMAIL_ADDRESS')
-                                sender_password = os.getenv('EMAIL_PASSWORD')
+                                sender_email = get_credential('EMAIL_ADDRESS')
+                                sender_password = get_credential('EMAIL_PASSWORD')
                                 
                                 if not sender_email or not sender_password:
-                                    st.error("❌ Email credentials missing")
+                                    st.error("❌ Email credentials not found. Please configure them in Settings.")
                                 else:
                                     results = followup_manager.send_followups(
                                         db_manager=db,
