@@ -101,6 +101,16 @@ class DatabaseManager:
         conn.commit()
         conn.close()
     
+    def delete_rfq(self, rfq_id: int):
+        """Delete RFQ and all related data (CASCADE handles foreign keys)"""
+        conn = self._get_connection()
+        cursor = conn.cursor()
+        cursor.execute("DELETE FROM rfqs WHERE id = ?", (rfq_id,))
+        deleted = cursor.rowcount
+        conn.commit()
+        conn.close()
+        return deleted > 0
+    
     # ========================================================================
     # ITEM OPERATIONS
     # ========================================================================
@@ -111,10 +121,13 @@ class DatabaseManager:
         cursor = conn.cursor()
         
         for item in items:
+            # Handle both 'name' and 'item_name' keys (Excel uses 'item_name', manual uses 'name')
+            item_name = item.get('item_name', item.get('name', ''))
+            
             cursor.execute(
                 """INSERT INTO items (rfq_id, name, description, quantity, unit)
                    VALUES (?, ?, ?, ?, ?)""",
-                (rfq_id, item['name'], item.get('description', ''),
+                (rfq_id, item_name, item.get('description', ''),
                  item.get('quantity', ''), item.get('unit', ''))
             )
         conn.commit()
@@ -238,10 +251,6 @@ class DatabaseManager:
         response_id = cursor.lastrowid
         conn.commit()
         conn.close()
-        
-        # Mark vendor as responded
-        self.mark_vendor_responded(vendor_id)
-        
         return response_id
     
     def get_responses(self, rfq_id: int) -> List[Dict]:
@@ -259,67 +268,59 @@ class DatabaseManager:
         rows = cursor.fetchall()
         conn.close()
         return [dict(row) for row in rows]
-
     
     # ========================================================================
     # QUOTATION OPERATIONS
     # ========================================================================
     
-    def add_quotation(self, response_id: int, item_name: str, 
-                     price: str, unit: str = "", notes: str = "") -> int:
-        """Add a quotation line item"""
+    def add_quotations(self, response_id: int, quotations: List[Dict]):
+        """Add parsed quotation items"""
         conn = self._get_connection()
         cursor = conn.cursor()
         
-        # Convert price to float if possible
-        try:
-            price_float = float(price.replace(',', '').replace('₹', '').replace('$', '').strip())
-        except:
-            price_float = None
-        
-        cursor.execute(
-            """INSERT INTO quotations 
-               (response_id, item_name, price, unit, notes)
-               VALUES (?, ?, ?, ?, ?)""",
-            (response_id, item_name, price_float, unit, notes)
-        )
-        quotation_id = cursor.lastrowid
+        for quote in quotations:
+            cursor.execute(
+                """INSERT INTO quotations (response_id, item_name, price, unit, notes)
+                   VALUES (?, ?, ?, ?, ?)""",
+                (response_id, quote.get('item_name', ''), 
+                 quote.get('price', 0), quote.get('unit', ''), 
+                 quote.get('notes', ''))
+            )
         conn.commit()
         conn.close()
-        return quotation_id
     
     def get_quotations(self, response_id: int) -> List[Dict]:
-        """Get all quotation line items for a response"""
+        """Get quotations for a response"""
         conn = self._get_connection()
         cursor = conn.cursor()
-        cursor.execute(
-            "SELECT * FROM quotations WHERE response_id = ?", 
-            (response_id,)
-        )
+        cursor.execute("SELECT * FROM quotations WHERE response_id = ?", (response_id,))
         rows = cursor.fetchall()
         conn.close()
         return [dict(row) for row in rows]
     
-    def get_all_quotations_for_rfq(self, rfq_id: int) -> List[Dict]:
-        """Get all quotations for an RFQ with vendor details"""
+    # ========================================================================
+    # SETTINGS OPERATIONS
+    # ========================================================================
+    
+    def save_setting(self, key: str, value: str, encrypted: bool = False):
+        """Save or update a setting"""
         conn = self._get_connection()
         cursor = conn.cursor()
+        
+        updated_at = datetime.now().isoformat()
         cursor.execute(
-            """SELECT q.*, v.name as vendor_name, v.email as vendor_email,
-                      r.received_at
-               FROM quotations q
-               JOIN responses r ON q.response_id = r.id
-               JOIN vendors v ON r.vendor_id = v.id
-               WHERE v.rfq_id = ?
-               ORDER BY v.name, q.item_name""",
-            (rfq_id,)
+            """INSERT OR REPLACE INTO settings (key, value, encrypted, updated_at)
+               VALUES (?, ?, ?, ?)""",
+            (key, value, 1 if encrypted else 0, updated_at)
         )
-        rows = cursor.fetchall()
+        conn.commit()
         conn.close()
-        return [dict(row) for row in rows]
-
-
-# Usage example
-if __name__ == "__main__":
-    db = DatabaseManager()
-    print("Database initialized successfully!")
+    
+    def get_setting(self, key: str) -> Optional[str]:
+        """Get a setting value"""
+        conn = self._get_connection()
+        cursor = conn.cursor()
+        cursor.execute("SELECT value FROM settings WHERE key = ?", (key,))
+        row = cursor.fetchone()
+        conn.close()
+        return row['value'] if row else None

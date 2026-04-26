@@ -20,7 +20,7 @@ def generate_html_table(rfq_items: List[Dict]) -> str:
     HTML table that vendors can easily read.
     
     Args:
-        rfq_items: List of dictionaries with keys: item_name, quantity, unit, description
+        rfq_items: List of dictionaries with keys: item_name (or name), quantity, unit, description
         
     Returns:
         HTML string containing the formatted table
@@ -45,9 +45,12 @@ def generate_html_table(rfq_items: List[Dict]) -> str:
         # Alternate row colors for better readability
         bg_color = "#f2f2f2" if idx % 2 == 0 else "#ffffff"
         
+        # Handle both 'item_name' and 'name' keys
+        item_name = item.get('item_name', item.get('name', ''))
+        
         html += f"""
             <tr style="background-color: {bg_color};">
-                <td>{item.get('item_name', '')}</td>
+                <td>{item_name}</td>
                 <td>{item.get('quantity', '')}</td>
                 <td>{item.get('unit', '')}</td>
                 <td>{item.get('description', '')}</td>
@@ -121,6 +124,28 @@ def generate_email_body(subject: str, body_text: str, rfq_items: List[Dict],
     """
     
     return full_html
+
+
+def generate_rfq_email(vendor_name: str, subject: str, body: str, 
+                       items: List[Dict], footer: str) -> str:
+    """
+    Generate personalized RFQ email for a vendor.
+    
+    Args:
+        vendor_name: Name of the vendor
+        subject: Email subject
+        body: Email body text
+        items: List of RFQ items
+        footer: Email footer
+        
+    Returns:
+        Complete HTML email body
+    """
+    
+    # Personalize body with vendor name
+    personalized_body = f"Dear {vendor_name},\n\n{body}"
+    
+    return generate_email_body(subject, personalized_body, items, footer)
 
 
 def generate_followup_body(original_subject: str, body_text: str, 

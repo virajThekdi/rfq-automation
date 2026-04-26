@@ -156,6 +156,39 @@ else:
                                     
                             except Exception as e:
                                 st.error(f"❌ Error: {e}")
+                
+                # Delete button with confirmation
+                st.markdown("---")
+                delete_key = f"delete_{rfq['id']}"
+                confirm_key = f"confirm_delete_{rfq['id']}"
+                
+                # Check if we're in confirmation mode
+                if confirm_key not in st.session_state:
+                    st.session_state[confirm_key] = False
+                
+                if not st.session_state[confirm_key]:
+                    if st.button("🗑️ Delete RFQ", key=delete_key, type="secondary", use_container_width=True):
+                        st.session_state[confirm_key] = True
+                        st.rerun()
+                else:
+                    st.warning("⚠️ Confirm deletion?")
+                    col_yes, col_no = st.columns(2)
+                    with col_yes:
+                        if st.button("✅ Yes", key=f"yes_{rfq['id']}", use_container_width=True):
+                            try:
+                                success = db.delete_rfq(rfq['id'])
+                                if success:
+                                    st.success(f"✅ RFQ #{rfq['id']} deleted!")
+                                    st.session_state[confirm_key] = False
+                                    st.rerun()
+                                else:
+                                    st.error("❌ Failed to delete RFQ")
+                            except Exception as e:
+                                st.error(f"❌ Error: {e}")
+                    with col_no:
+                        if st.button("❌ No", key=f"no_{rfq['id']}", use_container_width=True):
+                            st.session_state[confirm_key] = False
+                            st.rerun()
             
             # Vendors table
             st.subheader("📋 Vendor Status")
