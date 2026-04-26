@@ -7,6 +7,7 @@ from modules import excel_reader, email_sender, email_generator
 from datetime import datetime, timedelta
 import pandas as pd
 import os
+import tempfile
 from dotenv import load_dotenv
 
 st.set_page_config(page_title="Create RFQ", page_icon="📤", layout="wide")
@@ -26,26 +27,30 @@ if upload_method == "Upload Excel File":
     
     if uploaded_file:
         try:
-            # Save temporarily
-            temp_path = f"../data/uploads/temp_{datetime.now().strftime('%Y%m%d_%H%M%S')}.xlsx"
-            with open(temp_path, 'wb') as f:
-                f.write(uploaded_file.getbuffer())
+            # Use Python's tempfile to create a proper temporary file
+            with tempfile.NamedTemporaryFile(delete=False, suffix='.xlsx') as tmp_file:
+                tmp_file.write(uploaded_file.getbuffer())
+                temp_path = tmp_file.name
             
-            # Read vendors and items
-            vendors_df, items_df = excel_reader.read_excel_file(temp_path)
+            # Read vendors and items (already returns lists of dicts)
+            vendors_list, items_list = excel_reader.read_excel_file(temp_path)
             
-            st.success(f"✅ Loaded {len(vendors_df)} vendors and {len(items_df)} items")
+            # Clean up temp file
+            os.unlink(temp_path)
+            
+            st.success(f"✅ Loaded {len(vendors_list)} vendors and {len(items_list)} items")
             
             col1, col2 = st.columns(2)
             with col1:
                 st.write("**Vendors:**")
-                st.dataframe(vendors_df)
+                st.dataframe(pd.DataFrame(vendors_list))
             with col2:
                 st.write("**RFQ Items:**")
-                st.dataframe(items_df)
+                st.dataframe(pd.DataFrame(items_list))
             
-            st.session_state['vendors'] = vendors_df.to_dict('records')
-            st.session_state['items'] = items_df.to_dict('records')
+            # Data is already in list of dicts format - no need to call .to_dict()
+            st.session_state['vendors'] = vendors_list
+            st.session_state['items'] = items_list
             
         except Exception as e:
             st.error(f"❌ Error reading Excel: {e}")
@@ -288,17 +293,6 @@ if st.button("🚀 Create & Send RFQ", type="primary", use_container_width=True)
                 del st.session_state['vendors']
             if 'items' in st.session_state:
                 del st.session_state['items']
-            
-            # Navigation buttons
-            col1, col2 = st.columns(2)
-            with col1:
-                if st.button("📊 View Active RFQs", use_container_width=True):
-                    st.switch_page("pages/2_📊_Active_RFQs.py")
-            with col2:
-                if st.button("💬 View Responses", use_container_width=True):
-                    st.switch_page("pages/3_💬_Responses.py")
                 
         except Exception as e:
             st.error(f"❌ Error creating RFQ: {e}")
-            import traceback
-            st.code(traceback.format_exc())
