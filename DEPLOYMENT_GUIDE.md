@@ -121,13 +121,6 @@ git push -u origin main
 3. Click "New repository secret"
 4. Add these secrets one by one:
 
- Secret Name | Value |
--------------|-------|
- `EMAIL_ADDRESS` | `virajthekdi1@gmail.com` |
- `EMAIL_PASSWORD` | `tthe gtgf hdum kdqt` |
- `GEMINI_API_KEY` | `AIzaSyAwUraP4W2QSx1phKhOgyZwwEiJF3Zknbc` |
- `SUPABASE_URL` | `https://xxxxx.supabase.co` (from Step 1) |
- `SUPABASE_KEY` | `eyJhbGciOiJ...` (from Step 1) |
 
 ### Step 5: Deploy to Streamlit Cloud (5 minutes)
 
@@ -141,11 +134,7 @@ git push -u origin main
 5. Click "Advanced settings"
 6. In "Secrets" section, paste:
    ```toml
-   EMAIL_ADDRESS = "virajthekdi1@gmail.com"
-   EMAIL_PASSWORD = "tthe gtgf hdum kdqt"
-   GEMINI_API_KEY = "AIzaSyAwUraP4W2QSx1phKhOgyZwwEiJF3Zknbc"
-   SUPABASE_URL = "https://xxxxx.supabase.co"
-   SUPABASE_KEY = "eyJhbGciOiJ..."
+"
    ```
 7. Click "Deploy!"
 8. Wait 2-3 minutes
