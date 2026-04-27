@@ -10,15 +10,17 @@ This module:
 2. Searches for emails from vendors
 3. Extracts HTML content
 4. Parses HTML tables
-5. Prepares clean text for AI parsing
+5. Extracts attachments (Excel, PDF, etc.)
+6. Prepares clean text for AI parsing
 """
 
 import imaplib  # For reading emails via IMAP
 import email  # For parsing email messages
 from email.header import decode_header  # For decoding email headers
-from typing import List, Dict, Optional  # For type hints
+from typing import List, Dict, Optional, Tuple  # For type hints
 from bs4 import BeautifulSoup  # For parsing HTML
 import re  # For text cleaning
+from difflib import SequenceMatcher  # For fuzzy string matching
 
 
 def connect_to_inbox(email_address: str, password: str) -> Optional[imaplib.IMAP4_SSL]:
@@ -80,6 +82,11 @@ def extract_html_from_email(msg) -> str:
         # Iterate through email parts
         for part in msg.walk():
             content_type = part.get_content_type()
+            content_disposition = part.get_content_disposition()
+            
+            # Skip attachments (we handle them separately)
+            if content_disposition == "attachment":
+                continue
             
             try:
                 # Get the content
@@ -115,6 +122,84 @@ def extract_html_from_email(msg) -> str:
     
     # Return HTML if available, otherwise plain text
     return html_content if html_content else text_content
+
+
+def extract_attachments_from_email(msg) -> List[Dict]:
+    """
+    Extract attachments from email message.
+    
+    CRITICAL for handling Excel quotations, PDFs, and other file attachments.
+    
+    Args:
+        msg: Email message object
+        
+    Returns:
+        List of attachment dictionaries:
+        [
+            {
+                "filename": "quotation.xlsx",
+                "content_type": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                "content": b'<binary data>',
+                "size": 12345
+            }
+        ]
+    """
+    
+    attachments = []
+    
+    if not msg.is_multipart():
+        return attachments
+    
+    print(f"[DEBUG] Checking email for attachments...")
+    
+    for part in msg.walk():
+        # Get content disposition (attachment vs inline)
+        content_disposition = part.get_content_disposition()
+        
+        # Check if this is an attachment
+        if content_disposition == "attachment":
+            try:
+                # Get filename (may be encoded)
+                filename = part.get_filename()
+                
+                if filename:
+                    # Decode filename if needed
+                    decoded_filename = decode_header(filename)
+                    if decoded_filename and decoded_filename[0][1]:
+                        filename = decoded_filename[0][0].decode(decoded_filename[0][1])
+                    elif isinstance(decoded_filename[0][0], bytes):
+                        filename = decoded_filename[0][0].decode('utf-8', errors='ignore')
+                    else:
+                        filename = decoded_filename[0][0]
+                
+                # Get content type
+                content_type = part.get_content_type()
+                
+                # Get binary content
+                content = part.get_payload(decode=True)
+                
+                if content:
+                    attachment_info = {
+                        "filename": filename or "unnamed_attachment",
+                        "content_type": content_type,
+                        "content": content,
+                        "size": len(content)
+                    }
+                    
+                    attachments.append(attachment_info)
+                    
+                    print(f"[DEBUG]   ✓ Found attachment: {filename} ({content_type}, {len(content)} bytes)")
+                    
+            except Exception as e:
+                print(f"[WARNING] Error extracting attachment: {e}")
+                continue
+    
+    if attachments:
+        print(f"[✓] Extracted {len(attachments)} attachment(s)")
+    else:
+        print(f"[DEBUG] No attachments found in email")
+    
+    return attachments
 
 
 def parse_html_tables(html_content: str) -> List[List[str]]:
@@ -240,33 +325,156 @@ def clean_html_to_text(html_content: str) -> str:
     return final_text
 
 
-def search_vendor_replies(mail: imaplib.IMAP4_SSL, vendor_emails: List[str],
-                         original_subject: str, since_date: str = None) -> Dict[str, str]:
+def fuzzy_match_subject(subject: str, original_subject: str, threshold: float = 0.6) -> float:
     """
-    Search inbox for REPLY emails from vendors.
+    Calculate fuzzy similarity between two subjects.
     
-    SIMPLIFIED APPROACH: Gets ALL emails from vendor, then filters in Python
-    for "Re:" in subject. This is more reliable than complex IMAP searches.
+    Uses SequenceMatcher to handle typos, extra text, and partial matches.
     
-    Example:
-    - Original RFQ subject: "Request for Quotation"
-    - Reply subject: "Re: Request for Quotation"
+    Args:
+        subject: Email subject to check
+        original_subject: Original RFQ subject
+        threshold: Minimum similarity score (0.0 to 1.0)
+        
+    Returns:
+        Similarity score (0.0 to 1.0)
+    """
+    
+    # Normalize both subjects
+    s1 = subject.lower().strip()
+    s2 = original_subject.lower().strip()
+    
+    # Remove common reply prefixes
+    for prefix in ["re:", "fwd:", "fw:", "reply:", "response:"]:
+        if s1.startswith(prefix):
+            s1 = s1[len(prefix):].strip()
+    
+    # Calculate similarity
+    similarity = SequenceMatcher(None, s1, s2).ratio()
+    
+    return similarity
+
+
+def is_reply_to_rfq(msg, original_subject: str, rfq_message_id: str = None) -> tuple:
+    """
+    Check if an email is a reply to the RFQ using MULTIPLE methods.
+    
+    Checks (in order of reliability):
+    1. Email thread headers (In-Reply-To, References)
+    2. Exact "Re: [subject]" match
+    3. Fuzzy subject matching (partial/similar)
+    4. Keyword-based matching
+    
+    Args:
+        msg: Email message object
+        original_subject: Original RFQ subject
+        rfq_message_id: Message-ID of original RFQ (if available)
+        
+    Returns:
+        Tuple of (is_reply: bool, confidence: str, match_reason: str)
+    """
+    
+    subject = msg.get("Subject", "").strip()
+    in_reply_to = msg.get("In-Reply-To", "").strip()
+    references = msg.get("References", "").strip()
+    
+    print(f"[DEBUG] Checking if email is a reply...")
+    print(f"[DEBUG]   Subject: '{subject}'")
+    print(f"[DEBUG]   In-Reply-To: '{in_reply_to}'")
+    print(f"[DEBUG]   References: '{references}'")
+    
+    # METHOD 1: Check email thread headers (MOST RELIABLE)
+    if rfq_message_id:
+        print(f"[DEBUG]   Checking thread headers against RFQ Message-ID: '{rfq_message_id}'")
+        
+        if in_reply_to and rfq_message_id in in_reply_to:
+            print(f"[DEBUG]   ✓✓✓ MATCH via In-Reply-To header (HIGH CONFIDENCE)")
+            return (True, "high", "Thread header match (In-Reply-To)")
+        
+        if references and rfq_message_id in references:
+            print(f"[DEBUG]   ✓✓✓ MATCH via References header (HIGH CONFIDENCE)")
+            return (True, "high", "Thread header match (References)")
+    
+    # METHOD 2: Exact "Re: [subject]" match
+    normalized_subject = subject.lower().strip()
+    
+    if normalized_subject.startswith("re:"):
+        subject_after_re = subject[3:].strip()
+        
+        if subject_after_re.lower() == original_subject.lower():
+            print(f"[DEBUG]   ✓✓ MATCH via exact 'Re: [subject]' (MEDIUM CONFIDENCE)")
+            return (True, "medium", "Exact Re: subject match")
+    
+    # METHOD 3: Fuzzy subject matching
+    similarity = fuzzy_match_subject(subject, original_subject)
+    print(f"[DEBUG]   Subject similarity score: {similarity:.2f}")
+    
+    if similarity >= 0.8:
+        print(f"[DEBUG]   ✓ MATCH via high fuzzy similarity (MEDIUM CONFIDENCE)")
+        return (True, "medium", f"Fuzzy match (similarity: {similarity:.2f})")
+    
+    if similarity >= 0.6:
+        print(f"[DEBUG]   ✓ MATCH via moderate fuzzy similarity (LOW CONFIDENCE)")
+        return (True, "low", f"Partial match (similarity: {similarity:.2f})")
+    
+    # METHOD 4: Keyword-based matching (LAST RESORT)
+    # Check if subject contains key words from original
+    original_keywords = set(original_subject.lower().split())
+    subject_keywords = set(subject.lower().split())
+    
+    # Remove common words
+    common_words = {"re", "fwd", "fw", "reply", "response", "the", "a", "an", "for", "to", "from"}
+    original_keywords -= common_words
+    subject_keywords -= common_words
+    
+    if original_keywords and subject_keywords:
+        keyword_overlap = len(original_keywords & subject_keywords) / len(original_keywords)
+        
+        if keyword_overlap >= 0.6:
+            print(f"[DEBUG]   ✓ MATCH via keyword overlap (LOW CONFIDENCE)")
+            return (True, "low", f"Keyword overlap ({keyword_overlap:.2f})")
+    
+    print(f"[DEBUG]   ✗ No match found")
+    return (False, "none", "No match")
+
+
+def search_vendor_replies(mail: imaplib.IMAP4_SSL, vendor_emails: List[str],
+                         original_subject: str, since_date: str = None, 
+                         rfq_message_id: str = None) -> Dict[str, Tuple[str, List[Dict]]]:
+    """
+    Search inbox for REPLY emails from vendors using FLEXIBLE matching.
+    
+    IMPROVED APPROACH:
+    1. Gets ALL emails from each vendor (with date filter)
+    2. Uses multiple matching methods:
+       - Email thread headers (In-Reply-To, References)
+       - Exact "Re: [subject]" match
+       - Fuzzy subject similarity
+       - Keyword overlap
+    3. Extracts BOTH email body AND attachments
     
     Args:
         mail: IMAP connection object
         vendor_emails: List of vendor email addresses to check
         original_subject: Original RFQ subject (WITHOUT "Re:")
         since_date: Date to search from (format: "DD-MMM-YYYY")
+        rfq_message_id: Message-ID of original RFQ email (optional, for thread matching)
         
     Returns:
-        Dictionary mapping vendor email to their reply content
+        Dictionary mapping vendor email to (content, attachments) tuple:
+        {
+            "vendor@email.com": (
+                "email body text",
+                [{"filename": "quote.xlsx", "content": b'...', ...}]
+            )
+        }
     """
     
     replies = {}
     
     print(f"\n[DEBUG] ===== EMAIL SEARCH STARTING =====")
     print(f"[DEBUG] Looking for replies to: '{original_subject}'")
-    print(f"[DEBUG] Expected reply subject: 'Re: {original_subject}'")
+    print(f"[DEBUG] RFQ Message-ID: '{rfq_message_id or 'Not available'}'")
     print(f"[DEBUG] Searching for emails since: {since_date}")
     print(f"[DEBUG] Vendor emails to check: {vendor_emails}")
     
@@ -292,8 +500,7 @@ def search_vendor_replies(mail: imaplib.IMAP4_SSL, vendor_emails: List[str],
                     
                     print(f"[DEBUG] Searching in folder: {folder}")
                     
-                    # SIMPLIFIED SEARCH: Just get emails from vendor with date filter
-                    # We'll filter for "Re:" in Python (more reliable)
+                    # Get ALL emails from vendor with date filter
                     if since_date:
                         search_criteria = f'(SINCE "{since_date}" FROM "{vendor_email}")'
                     else:
@@ -316,6 +523,10 @@ def search_vendor_replies(mail: imaplib.IMAP4_SSL, vendor_emails: List[str],
                     if not email_ids:
                         print(f"[DEBUG] No emails from {vendor_email} found in {folder}")
                         continue
+                    
+                    # Track best match (in case multiple emails match)
+                    best_match = None
+                    best_confidence = "none"
                     
                     # Check each email to find replies
                     for email_id in reversed(email_ids):  # Start with most recent
@@ -346,58 +557,71 @@ def search_vendor_replies(mail: imaplib.IMAP4_SSL, vendor_emails: List[str],
                             print(f"[DEBUG]   To: {to_addr}")
                             print(f"[DEBUG]   Date: {date_str}")
                             
-                            # CRITICAL CHECK: Is this a REPLY?
-                            # A reply has "Re:" at the start of the subject
-                            is_reply = False
+                            # FLEXIBLE MATCHING: Check if this is a reply
+                            is_reply, confidence, match_reason = is_reply_to_rfq(
+                                msg, original_subject, rfq_message_id
+                            )
                             
-                            # Normalize subject (strip whitespace, handle encoding)
-                            normalized_subject = subject.strip()
+                            print(f"[DEBUG]   Match result: is_reply={is_reply}, confidence={confidence}")
+                            print(f"[DEBUG]   Match reason: {match_reason}")
                             
-                            print(f"[DEBUG] Checking if this is a reply...")
-                            print(f"[DEBUG]   Normalized subject: '{normalized_subject}'")
-                            
-                            # Check if subject starts with "Re:"
-                            if normalized_subject.startswith("Re:"):
-                                # Extract text after "Re:"
-                                subject_after_re = normalized_subject[3:].strip()
+                            # If it's a high confidence match, process immediately
+                            if is_reply and confidence == "high":
+                                print(f"[DEBUG] >>> HIGH CONFIDENCE REPLY FOUND! Processing...")
                                 
-                                print(f"[DEBUG]   ✓ Subject has 'Re:' prefix")
-                                print(f"[DEBUG]   Subject after 'Re:': '{subject_after_re}'")
-                                print(f"[DEBUG]   Original subject: '{original_subject}'")
-                                
-                                # Check if it matches original subject (case-insensitive)
-                                if subject_after_re.lower() == original_subject.lower():
-                                    is_reply = True
-                                    print(f"[DEBUG]   ✓✓ MATCH! This is a reply to our RFQ!")
-                                else:
-                                    print(f"[DEBUG]   ✗ Subject doesn't match original")
-                            else:
-                                print(f"[DEBUG]   ✗ Subject doesn't start with 'Re:'")
-                            
-                            # If it's a reply, process it
-                            if is_reply:
-                                print(f"[DEBUG] >>> REPLY FOUND! Processing email...")
-                                
-                                # Extract content
+                                # Extract content AND attachments
                                 html_content = extract_html_from_email(msg)
                                 clean_text = clean_html_to_text(html_content)
+                                attachments = extract_attachments_from_email(msg)
                                 
-                                # Store result
-                                replies[vendor_email] = clean_text
+                                # Store result (tuple of content and attachments)
+                                replies[vendor_email] = (clean_text, attachments)
                                 found_email = True
                                 
-                                print(f"[✓✓✓] Successfully found and processed reply from {vendor_email}")
+                                print(f"[✓✓✓] Successfully found reply from {vendor_email}")
                                 print(f"[✓✓✓] Reply subject: '{subject}'")
+                                print(f"[✓✓✓] Match reason: {match_reason}")
                                 print(f"[✓✓✓] Content length: {len(clean_text)} characters")
-                                break  # Found reply, stop checking more emails
-                            else:
-                                print(f"[DEBUG] >>> Not a reply, skipping this email")
+                                print(f"[✓✓✓] Attachments: {len(attachments)}")
+                                break
+                            
+                            # For medium/low confidence, track the best match
+                            elif is_reply:
+                                confidence_rank = {"high": 3, "medium": 2, "low": 1, "none": 0}
+                                
+                                if confidence_rank[confidence] > confidence_rank[best_confidence]:
+                                    best_confidence = confidence
+                                    best_match = {
+                                        "msg": msg,
+                                        "subject": subject,
+                                        "match_reason": match_reason
+                                    }
+                                    print(f"[DEBUG]   >>> Saved as best match so far")
                         
                         except Exception as email_error:
                             print(f"[✗] Error processing email {email_id}: {email_error}")
                             import traceback
                             traceback.print_exc()
                             continue
+                    
+                    # If no high-confidence match but we have a medium/low match, use it
+                    if not found_email and best_match and best_confidence in ["medium", "low"]:
+                        print(f"\n[DEBUG] >>> Using best match with {best_confidence} confidence")
+                        
+                        msg = best_match["msg"]
+                        html_content = extract_html_from_email(msg)
+                        clean_text = clean_html_to_text(html_content)
+                        attachments = extract_attachments_from_email(msg)
+                        
+                        # Store result (tuple of content and attachments)
+                        replies[vendor_email] = (clean_text, attachments)
+                        found_email = True
+                        
+                        print(f"[✓✓] Found reply from {vendor_email} ({best_confidence} confidence)")
+                        print(f"[✓✓] Reply subject: '{best_match['subject']}'")
+                        print(f"[✓✓] Match reason: {best_match['match_reason']}")
+                        print(f"[✓✓] Content length: {len(clean_text)} characters")
+                        print(f"[✓✓] Attachments: {len(attachments)}")
                     
                 except Exception as folder_error:
                     print(f"[✗] Error accessing folder {folder}: {folder_error}")
@@ -451,10 +675,11 @@ def check_new_responses(email_address: str, password: str, rfq_id: int,
     1. Connect to inbox
     2. Get vendor list from database
     3. Search for replies from each vendor
-    4. Parse content (Excel/HTML/Text/PDF)
-    5. Use AI if needed
-    6. Save to database
-    7. Update vendor status
+    4. Extract email body AND attachments (Excel/PDF/etc.)
+    5. Parse content using appropriate strategy
+    6. Use AI if needed
+    7. Save to database
+    8. Update vendor status
     
     Args:
         email_address: Gmail address to check
@@ -526,8 +751,12 @@ def check_new_responses(email_address: str, password: str, rfq_id: int,
         since_date = created_date.strftime("%d-%b-%Y")
         
         print(f"[INFO] Searching for emails since {since_date}...")
+        
+        # Get RFQ message ID if available (for thread matching)
+        rfq_message_id = rfq.get('message_id', None)
+        
         replies = search_vendor_replies(mail, vendor_emails, 
-                                       rfq['subject'], since_date)
+                                       rfq['subject'], since_date, rfq_message_id)
         
         mail.logout()
         
@@ -539,9 +768,10 @@ def check_new_responses(email_address: str, password: str, rfq_id: int,
         print(f"[✓] Found {len(replies)} new response(s)")
         
         # Step 5: Process each response
-        for vendor_email, email_content in replies.items():
+        for vendor_email, (email_content, attachments) in replies.items():
             try:
                 print(f"\n[INFO] Processing response from {vendor_email}...")
+                print(f"[INFO] Email has {len(attachments)} attachment(s)")
                 
                 # Find vendor in database
                 vendor = next((v for v in pending_vendors if v['email'] == vendor_email), None)
@@ -551,18 +781,54 @@ def check_new_responses(email_address: str, password: str, rfq_id: int,
                     results["failed"].append(vendor_email)
                     continue
                 
-                # Step 6: Parse the content using AI directly
-                print("[INFO] Using Gemini AI for parsing...")
-                is_quotation, item_count, parsed_data = ai_parser.parse_vendor_reply(
-                    email_content, gemini_api_key
-                )
+                # Step 6: Parse the content using format detection
+                needs_ai = True
+                parsed_data = None
                 
-                if not parsed_data:
-                    print("[WARNING] AI parsing failed")
-                    # Still save the response as non-quotation
-                    parsed_data = {"is_quotation": False}
+                # Import parsing modules
+                from . import format_detector, parser_engine
                 
-                # Step 7: Save to database
+                # Detect format (NOW WITH ATTACHMENTS!)
+                format_info = format_detector.detect_format(email_content, attachments=attachments)
+                print(f"[INFO] Detected format: {format_info['primary_format']}")
+                print(f"[INFO] Extraction strategy: {format_info['extraction_strategy']}")
+                print(f"[INFO] Confidence: {format_info['confidence']:.0%}")
+                
+                # Route to appropriate parser
+                try:
+                    parsed_result = parser_engine.parse_content(email_content, attachments)
+                    
+                    # Check if we got structured data without AI
+                    if parsed_result.get("items") and not parsed_result.get("needs_ai", True):
+                        parsed_data = {
+                            "is_quotation": True,
+                            "items": parsed_result["items"]
+                        }
+                        needs_ai = False
+                        print(f"[✓] Parsed {format_info['primary_format']} successfully (no AI needed)")
+                        print(f"[✓] Extracted {len(parsed_result['items'])} items")
+                    else:
+                        # Parser says we need AI
+                        needs_ai = True
+                        print(f"[INFO] Parser requires AI validation")
+                        
+                except Exception as e:
+                    print(f"[WARNING] Structured parsing failed: {e}, will use AI")
+                    needs_ai = True
+                
+                # Step 7: Use AI if needed
+                if needs_ai:
+                    print("[INFO] Using Gemini AI for parsing...")
+                    is_quotation, item_count, parsed_data = ai_parser.parse_vendor_reply(
+                        email_content, gemini_api_key
+                    )
+                    
+                    if not parsed_data:
+                        print("[WARNING] AI parsing failed")
+                        # Still save the response as non-quotation
+                        parsed_data = {"is_quotation": False}
+                
+                # Step 8: Save to database
                 print("[INFO] Saving response to database...")
                 
                 # Convert parsed data to JSON string
@@ -576,7 +842,7 @@ def check_new_responses(email_address: str, password: str, rfq_id: int,
                     email_body=email_content,
                     parsed_json=parsed_json,
                     is_quotation=parsed_data.get("is_quotation", False),
-                    ai_provider="gemini"
+                    ai_provider="gemini" if needs_ai else "structured_parser"
                 )
                 
                 # If it's a quotation, save line items
@@ -594,7 +860,7 @@ def check_new_responses(email_address: str, password: str, rfq_id: int,
                     
                     print("[✓] Quotation items saved")
                 
-                # Step 8: Update vendor status
+                # Step 9: Update vendor status
                 db_manager.update_vendor_status(vendor['id'], 'responded')
                 print(f"[✓] Vendor {vendor_email} status updated to 'responded'")
                 
