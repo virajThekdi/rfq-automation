@@ -260,8 +260,8 @@ def search_vendor_replies(mail: imaplib.IMAP4_SSL, vendor_emails: List[str],
     
     replies = {}
     
-    # Define folders to search
-    folders_to_search = ["INBOX", "[Gmail]/Sent"]
+    # Define folders to search (try both common Gmail sent folder names)
+    folders_to_search = ["INBOX", "[Gmail]/Sent Mail", "[Gmail]/Sent"]
     
     for vendor_email in vendor_emails:
         try:
@@ -322,7 +322,7 @@ def search_vendor_replies(mail: imaplib.IMAP4_SSL, vendor_emails: List[str],
                     print(f"[✓] Found reply from {vendor_email} in {folder}")
                     
                 except Exception as folder_error:
-                    print(f"[WARNING] Error searching {folder}: {str(folder_error)}")
+                    # Silently skip folders that don't exist or can't be accessed
                     continue
             
             if not found_email:
@@ -523,39 +523,38 @@ def check_new_responses(email_address: str, password: str, rfq_id: int,
                     for item in parsed_data["items"]:
                         db_manager.add_quotation(
                             response_id=response_id,
-                            item_name=item.get("item_name", ""),
-                            price=item.get("price", ""),
+                            item_name=item.get("item_name", item.get("name", "Unknown")),
+                            price=str(item.get("price", "")),
                             unit=item.get("unit", ""),
-                            notes=item.get("delivery", "") or item.get("notes", "")
+                            notes=item.get("notes", "")
                         )
+                    
+                    print("[✓] Quotation items saved")
                 
-                print(f"[✓] Response from {vendor_email} processed successfully")
+                # Step 9: Update vendor status
+                db_manager.update_vendor_status(vendor['id'], 'responded')
+                print(f"[✓] Vendor {vendor_email} status updated to 'responded'")
+                
                 results["processed"].append(vendor_email)
                 results["new_responses"] += 1
                 
             except Exception as e:
                 print(f"[✗] Error processing {vendor_email}: {str(e)}")
-                import traceback
-                traceback.print_exc()
                 results["failed"].append(vendor_email)
+                continue
         
-        # Step 9: Summary
+        # Final results
         results["success"] = True
-        results["message"] = f"Processed {results['new_responses']} new response(s)"
+        if results["new_responses"] > 0:
+            results["message"] = f"Successfully processed {results['new_responses']} response(s)"
+        else:
+            results["message"] = "No new responses found"
         
-        if results["failed"]:
-            results["message"] += f" ({len(results['failed'])} failed)"
-        
-        print(f"\n[SUMMARY] {results['message']}")
         return results
         
     except Exception as e:
-        print(f"[✗] Error in check_new_responses: {str(e)}")
+        print(f"[✗] FATAL ERROR: {str(e)}")
         import traceback
         traceback.print_exc()
         results["message"] = f"Error: {str(e)}"
         return results
-
-
-if __name__ == "__main__":
-    print("[✓] Email Monitor Module - check_new_responses() function added!")
