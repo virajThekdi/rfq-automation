@@ -551,46 +551,18 @@ def check_new_responses(email_address: str, password: str, rfq_id: int,
                     results["failed"].append(vendor_email)
                     continue
                 
-                # Step 6: Parse the content
-                # Check if AI parsing is needed
-                needs_ai = True
-                parsed_data = None
+                # Step 6: Parse the content using AI directly
+                print("[INFO] Using Gemini AI for parsing...")
+                is_quotation, item_count, parsed_data = ai_parser.parse_vendor_reply(
+                    email_content, gemini_api_key
+                )
                 
-                # Try structured parsing first (HTML tables, Excel, etc.)
-                from . import format_detector, parser_engine
+                if not parsed_data:
+                    print("[WARNING] AI parsing failed")
+                    # Still save the response as non-quotation
+                    parsed_data = {"is_quotation": False}
                 
-                # Detect format (Note: attachments not yet implemented)
-                format_info = format_detector.detect_format(email_content, attachments=None)
-                print(f"[INFO] Detected format: {format_info['format']}")
-                
-                # If HTML with tables, try parsing without AI
-                if "table" in email_content.lower() or "<tr>" in email_content.lower():
-                    print("[INFO] HTML table detected, parsing without AI...")
-                    try:
-                        parsed_result = parser_engine._parse_html(email_content)
-                        if parsed_result.get("items") and not parsed_result.get("needs_ai", True):
-                            parsed_data = {
-                                "is_quotation": True,
-                                "items": parsed_result["items"]
-                            }
-                            needs_ai = False
-                            print("[✓] Parsed HTML table successfully (no AI needed)")
-                    except Exception as e:
-                        print(f"[WARNING] HTML parsing failed: {e}, will use AI")
-                
-                # Step 7: Use AI if needed
-                if needs_ai:
-                    print("[INFO] Using Gemini AI for parsing...")
-                    is_quotation, item_count, parsed_data = ai_parser.parse_vendor_reply(
-                        email_content, gemini_api_key
-                    )
-                    
-                    if not parsed_data:
-                        print("[WARNING] AI parsing failed")
-                        # Still save the response as non-quotation
-                        parsed_data = {"is_quotation": False}
-                
-                # Step 8: Save to database
+                # Step 7: Save to database
                 print("[INFO] Saving response to database...")
                 
                 # Convert parsed data to JSON string
@@ -604,7 +576,7 @@ def check_new_responses(email_address: str, password: str, rfq_id: int,
                     email_body=email_content,
                     parsed_json=parsed_json,
                     is_quotation=parsed_data.get("is_quotation", False),
-                    ai_provider="gemini" if needs_ai else "structured_parser"
+                    ai_provider="gemini"
                 )
                 
                 # If it's a quotation, save line items
@@ -622,7 +594,7 @@ def check_new_responses(email_address: str, password: str, rfq_id: int,
                     
                     print("[✓] Quotation items saved")
                 
-                # Step 9: Update vendor status
+                # Step 8: Update vendor status
                 db_manager.update_vendor_status(vendor['id'], 'responded')
                 print(f"[✓] Vendor {vendor_email} status updated to 'responded'")
                 
@@ -631,6 +603,8 @@ def check_new_responses(email_address: str, password: str, rfq_id: int,
                 
             except Exception as e:
                 print(f"[✗] Error processing {vendor_email}: {str(e)}")
+                import traceback
+                traceback.print_exc()
                 results["failed"].append(vendor_email)
                 continue
         
