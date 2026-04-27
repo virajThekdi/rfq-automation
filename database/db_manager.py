@@ -22,9 +22,11 @@ class DatabaseManager:
         if not supabase_url or not supabase_key:
             try:
                 import streamlit as st
-                supabase_url = st.secrets.get("SUPABASE_URL")
-                supabase_key = st.secrets.get("SUPABASE_KEY")
-            except:
+                # Use bracket notation and strip whitespace
+                supabase_url = str(st.secrets["SUPABASE_URL"]).strip()
+                supabase_key = str(st.secrets["SUPABASE_KEY"]).strip()
+            except Exception as e:
+                print(f"Error reading Streamlit secrets: {e}")
                 pass
         
         if not supabase_url or not supabase_key:
