@@ -243,16 +243,20 @@ def clean_html_to_text(html_content: str) -> str:
 def search_vendor_replies(mail: imaplib.IMAP4_SSL, vendor_emails: List[str],
                          original_subject: str, since_date: str = None) -> Dict[str, str]:
     """
-    Search inbox AND sent folder for replies from specific vendors.
+    Search inbox AND sent folder for REPLY emails from vendors.
     
-    IMPORTANT: Searches for emails with "Re:" in subject or replies TO the system email.
-    This handles self-testing where both sender and receiver are the same email.
+    CRITICAL: This searches for emails with "Re:" in subject to identify REPLIES,
+    not the original outgoing RFQ emails.
+    
+    Example:
+    - Original RFQ subject: "Request for Quotation"
+    - Reply subject: "Re: Request for Quotation"
     
     Args:
         mail: IMAP connection object
         vendor_emails: List of vendor email addresses to check
-        original_subject: Original RFQ subject (to match replies)
-        since_date: Date to search from (format: "DD-MMM-YYYY", e.g., "01-Jan-2026")
+        original_subject: Original RFQ subject (WITHOUT "Re:")
+        since_date: Date to search from (format: "DD-MMM-YYYY")
         
     Returns:
         Dictionary mapping vendor email to their reply content
@@ -262,6 +266,11 @@ def search_vendor_replies(mail: imaplib.IMAP4_SSL, vendor_emails: List[str],
     
     # Define folders to search
     folders_to_search = ["INBOX", "[Gmail]/Sent Mail", "[Gmail]/Sent"]
+    
+    # Expected reply subject pattern
+    expected_reply_subject = f"Re: {original_subject}"
+    
+    print(f"[DEBUG] Looking for replies with subject: '{expected_reply_subject}'")
     
     for vendor_email in vendor_emails:
         try:
@@ -275,6 +284,7 @@ def search_vendor_replies(mail: imaplib.IMAP4_SSL, vendor_emails: List[str],
                 try:
                     # Select folder
                     mail.select(folder)
+                    print(f"[DEBUG] Searching in folder: {folder}")
                     
                     # Strategy 1: Search for emails with "Re:" in subject from vendor
                     search_criteria = f'(SUBJECT "Re:" FROM "{vendor_email}")'
@@ -283,18 +293,22 @@ def search_vendor_replies(mail: imaplib.IMAP4_SSL, vendor_emails: List[str],
                     if since_date:
                         search_criteria = f'(SINCE "{since_date}" SUBJECT "Re:" FROM "{vendor_email}")'
                     
+                    print(f"[DEBUG] Search criteria: {search_criteria}")
+                    
                     # Search folder
                     status, message_ids = mail.search(None, search_criteria)
                     
                     if status != "OK":
+                        print(f"[DEBUG] Search failed in {folder}")
                         continue
                     
                     # Get list of email IDs
                     email_ids = message_ids[0].split()
                     
                     if not email_ids:
-                        # Strategy 2: If no "Re:" found, search for ANY email from vendor after RFQ
-                        # and filter out the original RFQ by checking if it matches original subject
+                        print(f"[DEBUG] No emails with 'Re:' found in {folder}")
+                        
+                        # Strategy 2: If no "Re:" found, get ALL emails and filter manually
                         search_criteria = f'(FROM "{vendor_email}")'
                         if since_date:
                             search_criteria = f'(SINCE "{since_date}" FROM "{vendor_email}")'
@@ -302,12 +316,14 @@ def search_vendor_replies(mail: imaplib.IMAP4_SSL, vendor_emails: List[str],
                         status, message_ids = mail.search(None, search_criteria)
                         if status == "OK":
                             email_ids = message_ids[0].split()
+                            print(f"[DEBUG] Found {len(email_ids)} total emails from vendor in {folder}")
+                    else:
+                        print(f"[DEBUG] Found {len(email_ids)} emails with 'Re:' in {folder}")
                     
                     if not email_ids:
-                        continue  # No emails from this vendor in this folder
+                        continue
                     
-                    # Check ALL emails from this vendor (not just the latest)
-                    # to find ones that are replies (not the original RFQ)
+                    # Check ALL emails to find replies (not the original RFQ)
                     for email_id in reversed(email_ids):  # Start with most recent
                         try:
                             # Fetch the email
@@ -320,31 +336,39 @@ def search_vendor_replies(mail: imaplib.IMAP4_SSL, vendor_emails: List[str],
                             raw_email = msg_data[0][1]
                             msg = email.message_from_bytes(raw_email)
                             
-                            # Get subject
+                            # Get email metadata
                             subject = msg.get("Subject", "")
+                            from_addr = msg.get("From", "")
+                            to_addr = msg.get("To", "")
+                            date = msg.get("Date", "")
                             
-                            # Check if this is a REPLY (not the original RFQ)
-                            # A reply should either:
-                            # 1. Have "Re:" in subject, OR
-                            # 2. Have different subject than original RFQ, OR
-                            # 3. Be sent AFTER the RFQ (checked by examining all emails)
+                            print(f"[DEBUG] Checking email:")
+                            print(f"[DEBUG]   Subject: {subject}")
+                            print(f"[DEBUG]   From: {from_addr}")
+                            print(f"[DEBUG]   To: {to_addr}")
+                            print(f"[DEBUG]   Date: {date}")
                             
+                            # Check if this is a REPLY (not the original outgoing RFQ)
                             is_reply = False
                             
-                            # Check 1: Has "Re:" or "RE:" in subject
-                            if "re:" in subject.lower():
-                                is_reply = True
-                                print(f"[DEBUG] Found email with 'Re:' in subject: {subject}")
+                            # Method 1: Subject starts with "Re:"
+                            if subject.strip().startswith("Re:"):
+                                # Extract the part after "Re:"
+                                subject_after_re = subject.strip()[3:].strip()
+                                
+                                # Check if it matches the original subject
+                                if subject_after_re.lower() == original_subject.lower():
+                                    is_reply = True
+                                    print(f"[DEBUG] ✓ Found REPLY - subject matches 'Re: {original_subject}'")
+                                else:
+                                    print(f"[DEBUG] ✗ Subject has 'Re:' but doesn't match original: '{subject_after_re}' vs '{original_subject}'")
                             
-                            # Check 2: Subject is different from original RFQ subject
-                            elif subject.strip() != original_subject.strip():
-                                is_reply = True
-                                print(f"[DEBUG] Found email with different subject: {subject}")
-                            
-                            # Check 3: If we have multiple emails, assume later ones are replies
-                            elif len(email_ids) > 1 and email_id != email_ids[0]:
-                                is_reply = True
-                                print(f"[DEBUG] Found later email (not first one)")
+                            # Method 2: Subject is different from original (backup check)
+                            elif subject.strip().lower() != original_subject.lower():
+                                # This might be a reply with modified subject
+                                if "re:" in subject.lower() or "fwd:" in subject.lower():
+                                    is_reply = True
+                                    print(f"[DEBUG] ✓ Found REPLY - has Re:/Fwd: in subject")
                             
                             if is_reply:
                                 # Extract HTML content
@@ -358,17 +382,17 @@ def search_vendor_replies(mail: imaplib.IMAP4_SSL, vendor_emails: List[str],
                                 found_email = True
                                 
                                 print(f"[✓] Found reply from {vendor_email} in {folder}")
-                                print(f"[✓] Subject: {subject}")
+                                print(f"[✓] Reply subject: {subject}")
                                 break  # Found a reply, stop checking more emails
                             else:
-                                print(f"[DEBUG] Skipping email (appears to be original RFQ): {subject}")
+                                print(f"[DEBUG] ✗ Skipping - this is NOT a reply (original outgoing RFQ)")
                         
                         except Exception as email_error:
                             print(f"[DEBUG] Error checking email {email_id}: {email_error}")
                             continue
                     
                 except Exception as folder_error:
-                    # Silently skip folders that don't exist or can't be accessed
+                    print(f"[DEBUG] Error accessing folder {folder}: {folder_error}")
                     continue
             
             if not found_email:
@@ -379,6 +403,7 @@ def search_vendor_replies(mail: imaplib.IMAP4_SSL, vendor_emails: List[str],
             continue
     
     return replies
+
 
 def get_unread_count(mail: imaplib.IMAP4_SSL) -> int:
     """
@@ -450,6 +475,8 @@ def check_new_responses(email_address: str, password: str, rfq_id: int,
             results["message"] = f"RFQ #{rfq_id} not found"
             return results
         
+        print(f"[INFO] RFQ Subject: '{rfq['subject']}'")
+        
         # Step 2: Get vendors who haven't responded yet
         vendors = db_manager.get_vendors(rfq_id)
         pending_vendors = [v for v in vendors if v['response_status'] == 'pending']
@@ -460,6 +487,8 @@ def check_new_responses(email_address: str, password: str, rfq_id: int,
             return results
         
         print(f"[INFO] Found {len(pending_vendors)} pending vendors")
+        for v in pending_vendors:
+            print(f"[INFO]   - {v['email']}")
         
         # Step 3: Connect to inbox
         print("[INFO] Connecting to Gmail inbox...")
