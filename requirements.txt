@@ -5,10 +5,7 @@
 streamlit>=1.32.0
 
 # Database - Supabase (PostgreSQL)
-supabase==2.8.1
-postgrest==0.13.2
-gotrue==2.8.1
-httpx==0.24.1
+supabase>=2.3.0
 
 # Data Processing
 pandas>=2.2.0
