@@ -18,42 +18,62 @@ from typing import Dict, List
 import re
 
 
-def generate_enhanced_qcf(responses: Dict, output_dir: str = "data/outputs") -> str:
+def generate_enhanced_qcf(data: Dict, output_dir: str = "data/outputs") -> str:
     """
     Generate enhanced QCF with side-by-side price comparison.
     
     Args:
-        responses: Dictionary of vendor responses from SystemState
+        data: Dictionary with structure:
+            {
+                'rfq_subject': str,
+                'items': List[Dict],  # RFQ items
+                'responses': List[Dict]  # Vendor responses with vendor_name, vendor_email, items
+            }
         output_dir: Output directory
     
     Returns:
         Path to generated Excel file
     """
+    # Extract data from new format
+    rfq_subject = data.get('rfq_subject', 'Quotation Comparison')
+    rfq_items = data.get('items', [])
+    vendor_responses = data.get('responses', [])
+    
+    if not vendor_responses:
+        print("[⚠] No vendor responses found for comparison")
+        return None
+    
     # Step 1: Collect all items from all vendors
     all_items = {}  # {item_name: {vendor_name: price}}
     
-    for email, resp in responses.items():
-        vendor_name = resp.get("name", email)
-        parsed_data = resp.get("parsed_data")
+    for response in vendor_responses:
+        vendor_name = response.get('vendor_name', 'Unknown Vendor')
+        vendor_items = response.get('items', [])
         
-        if parsed_data and parsed_data.get("is_quotation"):
-            for item in parsed_data.get("items", []):
-                item_name = item.get("item_name", "").strip()
-                price = item.get("price", "").strip()
-                
-                if item_name:
-                    if item_name not in all_items:
-                        all_items[item_name] = {}
-                    all_items[item_name][vendor_name] = price
+        for item in vendor_items:
+            item_name = item.get('item_name', item.get('name', '')).strip()
+            price = item.get('price', '').strip()
+            
+            if item_name:
+                if item_name not in all_items:
+                    all_items[item_name] = {}
+                all_items[item_name][vendor_name] = price if price else 'No quote'
     
     # Step 2: Create comparison table
     comparison_data = []
     
+    # Get all unique vendors for column order
+    all_vendors = set()
+    for vendors in all_items.values():
+        all_vendors.update(vendors.keys())
+    all_vendors = sorted(all_vendors)
+    
     for item_name, vendors in all_items.items():
         row = {"Item": item_name}
         
-        # Add each vendor's price
-        row.update(vendors)
+        # Add each vendor's price (or '-' if no quote)
+        for vendor in all_vendors:
+            row[vendor] = vendors.get(vendor, '-')
         
         # Find lowest price
         lowest_price = None
@@ -82,9 +102,16 @@ def generate_enhanced_qcf(responses: Dict, output_dir: str = "data/outputs") -> 
     
     df = pd.DataFrame(comparison_data)
     
+    # Reorder columns: Item, then vendors, then Lowest Price
+    column_order = ["Item"] + all_vendors + ["Lowest Price"]
+    df = df[column_order]
+    
     # Step 4: Generate filename
     timestamp = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
-    filename = f"qcf_enhanced_{timestamp}.xlsx"
+    # Sanitize subject for filename
+    safe_subject = re.sub(r'[^\w\s-]', '', rfq_subject)[:30]
+    safe_subject = re.sub(r'[-\s]+', '_', safe_subject)
+    filename = f"qcf_{safe_subject}_{timestamp}.xlsx"
     filepath = os.path.join(output_dir, filename)
     
     # Ensure output directory exists
@@ -105,6 +132,16 @@ def generate_enhanced_qcf(responses: Dict, output_dir: str = "data/outputs") -> 
             )
             col_letter = chr(64 + idx)
             worksheet.column_dimensions[col_letter].width = min(max_length + 2, 30)
+        
+        # Add title row
+        worksheet.insert_rows(1)
+        worksheet['A1'] = f"Quotation Comparison: {rfq_subject}"
+        worksheet['A1'].font = worksheet['A1'].font.copy(bold=True, size=14)
+        
+        # Merge title across all columns
+        from openpyxl.utils import get_column_letter
+        last_col = get_column_letter(len(df.columns))
+        worksheet.merge_cells(f'A1:{last_col}1')
     
     print(f"[✓] Enhanced QCF generated: {filepath}")
     return filepath
@@ -137,7 +174,7 @@ def generate_summary_report(responses: Dict) -> str:
     Generate text summary of all responses.
     
     Args:
-        responses: Dictionary of vendor responses
+        responses: Dictionary of vendor responses (OLD FORMAT - for backward compatibility)
     
     Returns:
         Formatted text report
