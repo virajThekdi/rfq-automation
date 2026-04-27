@@ -4,11 +4,7 @@
 # Streamlit
 streamlit>=1.32.0
 
-
-
-# Supabase (PostgreSQL Database)
-psycopg2-binary==2.9.9
-
+# Database - Supabase (PostgreSQL)
 supabase==2.8.1
 postgrest==0.13.2
 gotrue==2.8.1
