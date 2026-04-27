@@ -243,10 +243,10 @@ def clean_html_to_text(html_content: str) -> str:
 def search_vendor_replies(mail: imaplib.IMAP4_SSL, vendor_emails: List[str],
                          original_subject: str, since_date: str = None) -> Dict[str, str]:
     """
-    Search inbox AND sent folder for REPLY emails from vendors.
+    Search inbox for REPLY emails from vendors.
     
-    CRITICAL: This searches for emails with "Re:" in subject to identify REPLIES,
-    not the original outgoing RFQ emails.
+    SIMPLIFIED APPROACH: Gets ALL emails from vendor, then filters in Python
+    for "Re:" in subject. This is more reliable than complex IMAP searches.
     
     Example:
     - Original RFQ subject: "Request for Quotation"
@@ -264,143 +264,160 @@ def search_vendor_replies(mail: imaplib.IMAP4_SSL, vendor_emails: List[str],
     
     replies = {}
     
-    # Define folders to search
-    folders_to_search = ["INBOX", "[Gmail]/Sent Mail", "[Gmail]/Sent"]
+    print(f"\n[DEBUG] ===== EMAIL SEARCH STARTING =====")
+    print(f"[DEBUG] Looking for replies to: '{original_subject}'")
+    print(f"[DEBUG] Expected reply subject: 'Re: {original_subject}'")
+    print(f"[DEBUG] Searching for emails since: {since_date}")
+    print(f"[DEBUG] Vendor emails to check: {vendor_emails}")
     
-    # Expected reply subject pattern
-    expected_reply_subject = f"Re: {original_subject}"
-    
-    print(f"[DEBUG] Looking for replies with subject: '{expected_reply_subject}'")
+    # Define folders to search (INBOX contains incoming emails)
+    folders_to_search = ["INBOX"]
     
     for vendor_email in vendor_emails:
         try:
+            print(f"\n[DEBUG] ----- Checking vendor: {vendor_email} -----")
             found_email = False
             
-            # Search in multiple folders
+            # Search in each folder
             for folder in folders_to_search:
                 if found_email:
                     break
                 
                 try:
                     # Select folder
-                    mail.select(folder)
+                    status, msg_data = mail.select(folder)
+                    if status != "OK":
+                        print(f"[DEBUG] Cannot access folder: {folder}")
+                        continue
+                    
                     print(f"[DEBUG] Searching in folder: {folder}")
                     
-                    # Strategy 1: Search for emails with "Re:" in subject from vendor
-                    search_criteria = f'(SUBJECT "Re:" FROM "{vendor_email}")'
-                    
-                    # Add date filter if provided
+                    # SIMPLIFIED SEARCH: Just get emails from vendor with date filter
+                    # We'll filter for "Re:" in Python (more reliable)
                     if since_date:
-                        search_criteria = f'(SINCE "{since_date}" SUBJECT "Re:" FROM "{vendor_email}")'
+                        search_criteria = f'(SINCE "{since_date}" FROM "{vendor_email}")'
+                    else:
+                        search_criteria = f'(FROM "{vendor_email}")'
                     
-                    print(f"[DEBUG] Search criteria: {search_criteria}")
+                    print(f"[DEBUG] IMAP search: {search_criteria}")
                     
-                    # Search folder
+                    # Execute search
                     status, message_ids = mail.search(None, search_criteria)
                     
                     if status != "OK":
                         print(f"[DEBUG] Search failed in {folder}")
                         continue
                     
-                    # Get list of email IDs
+                    # Get email IDs
                     email_ids = message_ids[0].split()
                     
-                    if not email_ids:
-                        print(f"[DEBUG] No emails with 'Re:' found in {folder}")
-                        
-                        # Strategy 2: If no "Re:" found, get ALL emails and filter manually
-                        search_criteria = f'(FROM "{vendor_email}")'
-                        if since_date:
-                            search_criteria = f'(SINCE "{since_date}" FROM "{vendor_email}")'
-                        
-                        status, message_ids = mail.search(None, search_criteria)
-                        if status == "OK":
-                            email_ids = message_ids[0].split()
-                            print(f"[DEBUG] Found {len(email_ids)} total emails from vendor in {folder}")
-                    else:
-                        print(f"[DEBUG] Found {len(email_ids)} emails with 'Re:' in {folder}")
+                    print(f"[DEBUG] Found {len(email_ids)} total emails from vendor in {folder}")
                     
                     if not email_ids:
+                        print(f"[DEBUG] No emails from {vendor_email} found in {folder}")
                         continue
                     
-                    # Check ALL emails to find replies (not the original RFQ)
+                    # Check each email to find replies
                     for email_id in reversed(email_ids):  # Start with most recent
                         try:
-                            # Fetch the email
+                            print(f"\n[DEBUG] --- Fetching email ID: {email_id.decode()} ---")
+                            
+                            # Fetch email
                             status, msg_data = mail.fetch(email_id, "(RFC822)")
                             
                             if status != "OK":
+                                print(f"[DEBUG] Failed to fetch email {email_id}")
                                 continue
                             
                             # Parse email
                             raw_email = msg_data[0][1]
                             msg = email.message_from_bytes(raw_email)
                             
-                            # Get email metadata
+                            # Extract metadata
                             subject = msg.get("Subject", "")
                             from_addr = msg.get("From", "")
                             to_addr = msg.get("To", "")
-                            date = msg.get("Date", "")
+                            date_str = msg.get("Date", "")
                             
-                            print(f"[DEBUG] Checking email:")
-                            print(f"[DEBUG]   Subject: {subject}")
+                            # Print email details
+                            print(f"[DEBUG] Email Details:")
+                            print(f"[DEBUG]   Subject: '{subject}'")
                             print(f"[DEBUG]   From: {from_addr}")
                             print(f"[DEBUG]   To: {to_addr}")
-                            print(f"[DEBUG]   Date: {date}")
+                            print(f"[DEBUG]   Date: {date_str}")
                             
-                            # Check if this is a REPLY (not the original outgoing RFQ)
+                            # CRITICAL CHECK: Is this a REPLY?
+                            # A reply has "Re:" at the start of the subject
                             is_reply = False
                             
-                            # Method 1: Subject starts with "Re:"
-                            if subject.strip().startswith("Re:"):
-                                # Extract the part after "Re:"
-                                subject_after_re = subject.strip()[3:].strip()
+                            # Normalize subject (strip whitespace, handle encoding)
+                            normalized_subject = subject.strip()
+                            
+                            print(f"[DEBUG] Checking if this is a reply...")
+                            print(f"[DEBUG]   Normalized subject: '{normalized_subject}'")
+                            
+                            # Check if subject starts with "Re:"
+                            if normalized_subject.startswith("Re:"):
+                                # Extract text after "Re:"
+                                subject_after_re = normalized_subject[3:].strip()
                                 
-                                # Check if it matches the original subject
+                                print(f"[DEBUG]   ✓ Subject has 'Re:' prefix")
+                                print(f"[DEBUG]   Subject after 'Re:': '{subject_after_re}'")
+                                print(f"[DEBUG]   Original subject: '{original_subject}'")
+                                
+                                # Check if it matches original subject (case-insensitive)
                                 if subject_after_re.lower() == original_subject.lower():
                                     is_reply = True
-                                    print(f"[DEBUG] ✓ Found REPLY - subject matches 'Re: {original_subject}'")
+                                    print(f"[DEBUG]   ✓✓ MATCH! This is a reply to our RFQ!")
                                 else:
-                                    print(f"[DEBUG] ✗ Subject has 'Re:' but doesn't match original: '{subject_after_re}' vs '{original_subject}'")
+                                    print(f"[DEBUG]   ✗ Subject doesn't match original")
+                            else:
+                                print(f"[DEBUG]   ✗ Subject doesn't start with 'Re:'")
                             
-                            # Method 2: Subject is different from original (backup check)
-                            elif subject.strip().lower() != original_subject.lower():
-                                # This might be a reply with modified subject
-                                if "re:" in subject.lower() or "fwd:" in subject.lower():
-                                    is_reply = True
-                                    print(f"[DEBUG] ✓ Found REPLY - has Re:/Fwd: in subject")
-                            
+                            # If it's a reply, process it
                             if is_reply:
-                                # Extract HTML content
-                                html_content = extract_html_from_email(msg)
+                                print(f"[DEBUG] >>> REPLY FOUND! Processing email...")
                                 
-                                # Convert HTML to clean text (with tables parsed)
+                                # Extract content
+                                html_content = extract_html_from_email(msg)
                                 clean_text = clean_html_to_text(html_content)
                                 
-                                # Store the cleaned content
+                                # Store result
                                 replies[vendor_email] = clean_text
                                 found_email = True
                                 
-                                print(f"[✓] Found reply from {vendor_email} in {folder}")
-                                print(f"[✓] Reply subject: {subject}")
-                                break  # Found a reply, stop checking more emails
+                                print(f"[✓✓✓] Successfully found and processed reply from {vendor_email}")
+                                print(f"[✓✓✓] Reply subject: '{subject}'")
+                                print(f"[✓✓✓] Content length: {len(clean_text)} characters")
+                                break  # Found reply, stop checking more emails
                             else:
-                                print(f"[DEBUG] ✗ Skipping - this is NOT a reply (original outgoing RFQ)")
+                                print(f"[DEBUG] >>> Not a reply, skipping this email")
                         
                         except Exception as email_error:
-                            print(f"[DEBUG] Error checking email {email_id}: {email_error}")
+                            print(f"[✗] Error processing email {email_id}: {email_error}")
+                            import traceback
+                            traceback.print_exc()
                             continue
                     
                 except Exception as folder_error:
-                    print(f"[DEBUG] Error accessing folder {folder}: {folder_error}")
+                    print(f"[✗] Error accessing folder {folder}: {folder_error}")
+                    import traceback
+                    traceback.print_exc()
                     continue
             
             if not found_email:
-                print(f"[INFO] No reply found from {vendor_email} in any folder")
+                print(f"\n[INFO] >>> No reply found from {vendor_email} in any folder")
                 
-        except Exception as e:
-            print(f"[✗] Error checking {vendor_email}: {str(e)}")
+        except Exception as vendor_error:
+            print(f"[✗] Error checking vendor {vendor_email}: {vendor_error}")
+            import traceback
+            traceback.print_exc()
             continue
+    
+    print(f"\n[DEBUG] ===== EMAIL SEARCH COMPLETE =====")
+    print(f"[DEBUG] Total replies found: {len(replies)}")
+    if replies:
+        print(f"[DEBUG] Vendors who replied: {list(replies.keys())}")
     
     return replies
 
