@@ -22,11 +22,9 @@ class DatabaseManager:
         if not supabase_url or not supabase_key:
             try:
                 import streamlit as st
-                # Use bracket notation and strip whitespace
-                supabase_url = str(st.secrets["SUPABASE_URL"]).strip()
-                supabase_key = str(st.secrets["SUPABASE_KEY"]).strip()
-            except Exception as e:
-                print(f"Error reading Streamlit secrets: {e}")
+                supabase_url = st.secrets.get("SUPABASE_URL")
+                supabase_key = st.secrets.get("SUPABASE_KEY")
+            except:
                 pass
         
         if not supabase_url or not supabase_key:
@@ -191,16 +189,34 @@ class DatabaseManager:
         return response.data[0]['id']
     
     def get_responses(self, rfq_id: int) -> List[Dict]:
-        """Get all responses for an RFQ"""
+        """
+        Get all responses for an RFQ with vendor details.
+        
+        Returns responses with flattened vendor_name and vendor_email fields.
+        """
         # Get vendors for this RFQ
-        vendors_response = self.supabase.table('vendors').select('id').eq('rfq_id', rfq_id).execute()
+        vendors_response = self.supabase.table('vendors').select('id, name, email').eq('rfq_id', rfq_id).execute()
         vendor_ids = [v['id'] for v in vendors_response.data]
         
         if not vendor_ids:
             return []
         
+        # Create vendor lookup dict
+        vendor_lookup = {v['id']: {'name': v['name'], 'email': v['email']} for v in vendors_response.data}
+        
         # Get responses for these vendors
         responses = self.supabase.table('responses').select("*").in_('vendor_id', vendor_ids).execute()
+        
+        # Flatten vendor data into each response
+        for response in responses.data:
+            vendor_id = response.get('vendor_id')
+            if vendor_id and vendor_id in vendor_lookup:
+                response['vendor_name'] = vendor_lookup[vendor_id]['name']
+                response['vendor_email'] = vendor_lookup[vendor_id]['email']
+            else:
+                response['vendor_name'] = 'Unknown'
+                response['vendor_email'] = 'Unknown'
+        
         return responses.data
     
     def add_quotation(self, response_id: int, item_name: str, 
