@@ -243,7 +243,10 @@ def clean_html_to_text(html_content: str) -> str:
 def search_vendor_replies(mail: imaplib.IMAP4_SSL, vendor_emails: List[str],
                          original_subject: str, since_date: str = None) -> Dict[str, str]:
     """
-    Search inbox for replies from specific vendors.
+    Search inbox AND sent folder for replies from specific vendors.
+    
+    IMPORTANT: This searches both INBOX and [Gmail]/Sent to handle cases where
+    users test by sending emails to themselves (Gmail puts self-sent emails in Sent, not Inbox).
     
     Args:
         mail: IMAP connection object
@@ -257,52 +260,74 @@ def search_vendor_replies(mail: imaplib.IMAP4_SSL, vendor_emails: List[str],
     
     replies = {}
     
+    # Define folders to search
+    folders_to_search = ["INBOX", "[Gmail]/Sent"]
+    
     for vendor_email in vendor_emails:
         try:
-            # Build search criteria
-            # Search for emails FROM vendor
-            search_criteria = f'(FROM "{vendor_email}")'
+            found_email = False
             
-            # Add date filter if provided
-            if since_date:
-                search_criteria = f'(SINCE "{since_date}" FROM "{vendor_email}")'
+            # Search in both INBOX and Sent folders
+            for folder in folders_to_search:
+                if found_email:
+                    break  # Already found email for this vendor
+                
+                try:
+                    # Select folder
+                    mail.select(folder)
+                    
+                    # Build search criteria
+                    # Search for emails FROM vendor
+                    search_criteria = f'(FROM "{vendor_email}")'
+                    
+                    # Add date filter if provided
+                    if since_date:
+                        search_criteria = f'(SINCE "{since_date}" FROM "{vendor_email}")'
+                    
+                    # Search folder
+                    status, message_ids = mail.search(None, search_criteria)
+                    
+                    if status != "OK":
+                        continue
+                    
+                    # Get list of email IDs
+                    email_ids = message_ids[0].split()
+                    
+                    if not email_ids:
+                        continue  # No emails from this vendor in this folder
+                    
+                    # Get the most recent email
+                    latest_email_id = email_ids[-1]
+                    
+                    # Fetch the email
+                    status, msg_data = mail.fetch(latest_email_id, "(RFC822)")
+                    
+                    if status != "OK":
+                        continue
+                    
+                    # Parse email
+                    raw_email = msg_data[0][1]
+                    msg = email.message_from_bytes(raw_email)
+                    
+                    # Extract HTML content
+                    html_content = extract_html_from_email(msg)
+                    
+                    # Convert HTML to clean text (with tables parsed)
+                    clean_text = clean_html_to_text(html_content)
+                    
+                    # Store the cleaned content
+                    replies[vendor_email] = clean_text
+                    found_email = True
+                    
+                    print(f"[✓] Found reply from {vendor_email} in {folder}")
+                    
+                except Exception as folder_error:
+                    print(f"[WARNING] Error searching {folder}: {str(folder_error)}")
+                    continue
             
-            # Search inbox
-            status, message_ids = mail.search(None, search_criteria)
-            
-            if status != "OK":
-                continue
-            
-            # Get list of email IDs
-            email_ids = message_ids[0].split()
-            
-            if not email_ids:
-                continue  # No emails from this vendor
-            
-            # Get the most recent email
-            latest_email_id = email_ids[-1]
-            
-            # Fetch the email
-            status, msg_data = mail.fetch(latest_email_id, "(RFC822)")
-            
-            if status != "OK":
-                continue
-            
-            # Parse email
-            raw_email = msg_data[0][1]
-            msg = email.message_from_bytes(raw_email)
-            
-            # Extract HTML content
-            html_content = extract_html_from_email(msg)
-            
-            # Convert HTML to clean text (with tables parsed)
-            clean_text = clean_html_to_text(html_content)
-            
-            # Store the cleaned content
-            replies[vendor_email] = clean_text
-            
-            print(f"[✓] Found reply from {vendor_email}")
-            
+            if not found_email:
+                print(f"[INFO] No reply found from {vendor_email} in any folder")
+                
         except Exception as e:
             print(f"[✗] Error checking {vendor_email}: {str(e)}")
             continue
