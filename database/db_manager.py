@@ -1,39 +1,36 @@
 """database/db_manager.py
-Database operations for RFQ Streamlit app
+Database operations for RFQ Streamlit app - Supabase (PostgreSQL) Version
 """
-import sqlite3
-import json
+import os
 from datetime import datetime, timedelta
 from typing import List, Dict, Optional
-import os
+from supabase import create_client, Client
+from dotenv import load_dotenv
 
-DB_PATH = "database/rfq_system.db"
+load_dotenv()
 
 class DatabaseManager:
-    """Manages all database operations for RFQ system"""
+    """Manages all database operations for RFQ system using Supabase"""
     
-    def __init__(self, db_path: str = DB_PATH):
-        self.db_path = db_path
-        self._init_database()
-    
-    def _init_database(self):
-        """Initialize database with schema"""
-        # Read schema from schema.sql
-        schema_path = os.path.join(os.path.dirname(__file__), "schema.sql")
-        if os.path.exists(schema_path):
-            with open(schema_path, 'r') as f:
-                schema = f.read()
-            
-            conn = sqlite3.connect(self.db_path)
-            conn.executescript(schema)
-            conn.commit()
-            conn.close()
-    
-    def _get_connection(self):
-        """Get database connection"""
-        conn = sqlite3.connect(self.db_path)
-        conn.row_factory = sqlite3.Row  # Return rows as dictionaries
-        return conn
+    def __init__(self):
+        """Initialize Supabase client"""
+        # Try to get from environment first (local)
+        supabase_url = os.getenv('SUPABASE_URL')
+        supabase_key = os.getenv('SUPABASE_KEY')
+        
+        # If not in env, try Streamlit secrets (cloud)
+        if not supabase_url or not supabase_key:
+            try:
+                import streamlit as st
+                supabase_url = st.secrets.get("SUPABASE_URL")
+                supabase_key = st.secrets.get("SUPABASE_KEY")
+            except:
+                pass
+        
+        if not supabase_url or not supabase_key:
+            raise ValueError("Supabase credentials not found in environment or secrets")
+        
+        self.supabase: Client = create_client(supabase_url, supabase_key)
     
     # ========================================================================
     # RFQ OPERATIONS
@@ -43,73 +40,46 @@ class DatabaseManager:
                    deadline_minutes: int, followup_count: int, 
                    followup_interval: int) -> int:
         """Create a new RFQ and return its ID"""
-        conn = self._get_connection()
-        cursor = conn.cursor()
-        
         now = datetime.now().isoformat()
-        deadline = datetime.now()
-        deadline = deadline + timedelta(minutes=deadline_minutes)
+        deadline = datetime.now() + timedelta(minutes=deadline_minutes)
         deadline_str = deadline.isoformat()
         
-        cursor.execute(
-            """INSERT INTO rfqs 
-               (subject, body, footer, deadline_minutes, deadline_time, 
-                followup_count, followup_interval, created_at, status)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'active')""",
-            (subject, body, footer, deadline_minutes, deadline_str, 
-             followup_count, followup_interval, now)
-        )
-        rfq_id = cursor.lastrowid
-        conn.commit()
-        conn.close()
-        return rfq_id
+        response = self.supabase.table('rfqs').insert({
+            'subject': subject,
+            'body': body,
+            'footer': footer,
+            'deadline_minutes': deadline_minutes,
+            'deadline_time': deadline_str,
+            'followup_count': followup_count,
+            'followup_interval': followup_interval,
+            'created_at': now,
+            'status': 'active'
+        }).execute()
+        
+        return response.data[0]['id']
     
     def get_rfq(self, rfq_id: int) -> Optional[Dict]:
         """Get RFQ by ID"""
-        conn = self._get_connection()
-        cursor = conn.cursor()
-        cursor.execute("SELECT * FROM rfqs WHERE id = ?", (rfq_id,))
-        row = cursor.fetchone()
-        conn.close()
-        return dict(row) if row else None
+        response = self.supabase.table('rfqs').select("*").eq('id', rfq_id).execute()
+        return response.data[0] if response.data else None
     
     def get_active_rfqs(self) -> List[Dict]:
         """Get all active RFQs"""
-        conn = self._get_connection()
-        cursor = conn.cursor()
-        cursor.execute(
-            """SELECT * FROM rfqs 
-               WHERE status = 'active' 
-               ORDER BY created_at DESC"""
-        )
-        rows = cursor.fetchall()
-        conn.close()
-        return [dict(row) for row in rows]
+        response = self.supabase.table('rfqs').select("*").eq('status', 'active').execute()
+        return response.data
     
     def update_rfq_status(self, rfq_id: int, status: str):
         """Update RFQ status"""
-        conn = self._get_connection()
-        cursor = conn.cursor()
-        
-        completed_at = datetime.now().isoformat() if status == 'completed' else None
-        cursor.execute(
-            """UPDATE rfqs 
-               SET status = ?, completed_at = ? 
-               WHERE id = ?""",
-            (status, completed_at, rfq_id)
-        )
-        conn.commit()
-        conn.close()
+        self.supabase.table('rfqs').update({
+            'status': status,
+            'completed_at': datetime.now().isoformat() if status == 'completed' else None
+        }).eq('id', rfq_id).execute()
+    
     
     def delete_rfq(self, rfq_id: int):
-        """Delete RFQ and all related data (CASCADE handles foreign keys)"""
-        conn = self._get_connection()
-        cursor = conn.cursor()
-        cursor.execute("DELETE FROM rfqs WHERE id = ?", (rfq_id,))
-        deleted = cursor.rowcount
-        conn.commit()
-        conn.close()
-        return deleted > 0
+        """Delete RFQ and all related data (CASCADE in database handles foreign keys)"""
+        self.supabase.table('rfqs').delete().eq('id', rfq_id).execute()
+        return True
     
     # ========================================================================
     # ITEM OPERATIONS
@@ -117,30 +87,23 @@ class DatabaseManager:
     
     def add_items(self, rfq_id: int, items: List[Dict]):
         """Add multiple items to an RFQ"""
-        conn = self._get_connection()
-        cursor = conn.cursor()
-        
+        items_data = []
         for item in items:
             # Handle both 'name' and 'item_name' keys (Excel uses 'item_name', manual uses 'name')
             item_name = item.get('item_name', item.get('name', ''))
-            
-            cursor.execute(
-                """INSERT INTO items (rfq_id, name, description, quantity, unit)
-                   VALUES (?, ?, ?, ?, ?)""",
-                (rfq_id, item_name, item.get('description', ''),
-                 item.get('quantity', ''), item.get('unit', ''))
-            )
-        conn.commit()
-        conn.close()
+            items_data.append({
+                'rfq_id': rfq_id,
+                'name': item_name,
+                'description': item.get('description', ''),
+                'quantity': item.get('quantity', ''),
+                'unit': item.get('unit', '')
+            })
+        self.supabase.table('items').insert(items_data).execute()
     
     def get_items(self, rfq_id: int) -> List[Dict]:
         """Get all items for an RFQ"""
-        conn = self._get_connection()
-        cursor = conn.cursor()
-        cursor.execute("SELECT * FROM items WHERE rfq_id = ?", (rfq_id,))
-        rows = cursor.fetchall()
-        conn.close()
-        return [dict(row) for row in rows]
+        response = self.supabase.table('items').select("*").eq('rfq_id', rfq_id).execute()
+        return response.data
     
     # ========================================================================
     # VENDOR OPERATIONS
@@ -148,86 +111,63 @@ class DatabaseManager:
     
     def add_vendors(self, rfq_id: int, vendors: List[Dict]):
         """Add multiple vendors to an RFQ"""
-        conn = self._get_connection()
-        cursor = conn.cursor()
-        
         sent_at = datetime.now().isoformat()
+        vendors_data = []
         for vendor in vendors:
-            cursor.execute(
-                """INSERT INTO vendors (rfq_id, name, email, sent_at)
-                   VALUES (?, ?, ?, ?)""",
-                (rfq_id, vendor['name'], vendor['email'], sent_at)
-            )
+            vendors_data.append({
+                'rfq_id': rfq_id,
+                'name': vendor['name'],
+                'email': vendor['email'],
+                'sent_at': sent_at,
+                'response_status': 'pending'
+            })
+        self.supabase.table('vendors').insert(vendors_data).execute()
         
-        # Update total_vendors count in rfqs table
-        cursor.execute(
-            "UPDATE rfqs SET total_vendors = ? WHERE id = ?",
-            (len(vendors), rfq_id)
-        )
-        
-        conn.commit()
-        conn.close()
+        # Update total_vendors count
+        self.supabase.table('rfqs').update({
+            'total_vendors': len(vendors)
+        }).eq('id', rfq_id).execute()
     
     def get_vendors(self, rfq_id: int) -> List[Dict]:
         """Get all vendors for an RFQ"""
-        conn = self._get_connection()
-        cursor = conn.cursor()
-        cursor.execute("SELECT * FROM vendors WHERE rfq_id = ?", (rfq_id,))
-        rows = cursor.fetchall()
-        conn.close()
-        return [dict(row) for row in rows]
+        response = self.supabase.table('vendors').select("*").eq('rfq_id', rfq_id).execute()
+        return response.data
     
-    def mark_vendor_responded(self, vendor_id: int):
-        """Mark vendor as responded"""
-        conn = self._get_connection()
-        cursor = conn.cursor()
+    def update_vendor_status(self, vendor_id: int, status: str):
+        """Update vendor response status"""
+        # Update vendor
+        self.supabase.table('vendors').update({
+            'response_status': status,
+            'responded_at': datetime.now().isoformat()
+        }).eq('id', vendor_id).execute()
         
-        responded_at = datetime.now().isoformat()
-        cursor.execute(
-            """UPDATE vendors 
-               SET response_status = 'responded', responded_at = ? 
-               WHERE id = ?""",
-            (responded_at, vendor_id)
-        )
-        
-        # Update responded_vendors count in rfqs table
-        cursor.execute(
-            """SELECT rfq_id FROM vendors WHERE id = ?""", (vendor_id,)
-        )
-        rfq_id = cursor.fetchone()[0]
-        
-        cursor.execute(
-            """UPDATE rfqs 
-               SET responded_vendors = (
-                   SELECT COUNT(*) FROM vendors 
-                   WHERE rfq_id = ? AND response_status = 'responded'
-               )
-               WHERE id = ?""",
-            (rfq_id, rfq_id)
-        )
-        
-        conn.commit()
-        conn.close()
+        # Get vendor's RFQ ID
+        vendor_response = self.supabase.table('vendors').select('rfq_id').eq('id', vendor_id).execute()
+        if vendor_response.data:
+            rfq_id = vendor_response.data[0]['rfq_id']
+            
+            # Count responded vendors
+            responded_response = self.supabase.table('vendors').select('id').eq('rfq_id', rfq_id).eq('response_status', 'responded').execute()
+            responded_count = len(responded_response.data)
+            
+            # Update RFQ responded count
+            self.supabase.table('rfqs').update({
+                'responded_vendors': responded_count
+            }).eq('id', rfq_id).execute()
     
-
     
     def update_vendor_followup(self, vendor_id: int):
         """Update vendor follow-up tracking when reminder is sent"""
-        conn = self._get_connection()
-        cursor = conn.cursor()
+        # Get current followup count
+        vendor_response = self.supabase.table('vendors').select('followup_sent_count').eq('id', vendor_id).execute()
+        current_count = vendor_response.data[0]['followup_sent_count'] if vendor_response.data else 0
         
-        now = datetime.now().isoformat()
-        
-        cursor.execute(
-            """UPDATE vendors 
-               SET followup_sent_count = followup_sent_count + 1,
-                   last_followup_at = ?
-               WHERE id = ?""",
-            (now, vendor_id)
-        )
-        
-        conn.commit()
-        conn.close()
+        # Update vendor
+        self.supabase.table('vendors').update({
+            'followup_sent_count': current_count + 1,
+            'last_followup_at': datetime.now().isoformat()
+        }).eq('id', vendor_id).execute()
+    
     # ========================================================================
     # RESPONSE OPERATIONS
     # ========================================================================
@@ -235,92 +175,46 @@ class DatabaseManager:
     def add_response(self, vendor_id: int, email_subject: str, 
                     email_body: str, parsed_json: str, 
                     is_quotation: bool, ai_provider: str) -> int:
-        """Add a response from a vendor"""
-        conn = self._get_connection()
-        cursor = conn.cursor()
+        """Add a vendor response"""
+        response = self.supabase.table('responses').insert({
+            'vendor_id': vendor_id,
+            'email_subject': email_subject,
+            'email_body': email_body,
+            'parsed_json': parsed_json,
+            'is_quotation': is_quotation,
+            'ai_provider': ai_provider,
+            'received_at': datetime.now().isoformat()
+        }).execute()
         
-        received_at = datetime.now().isoformat()
-        cursor.execute(
-            """INSERT INTO responses 
-               (vendor_id, email_subject, email_body, received_at, 
-                parsed_json, is_quotation, ai_provider)
-               VALUES (?, ?, ?, ?, ?, ?, ?)""",
-            (vendor_id, email_subject, email_body, received_at, 
-             parsed_json, 1 if is_quotation else 0, ai_provider)
-        )
-        response_id = cursor.lastrowid
-        conn.commit()
-        conn.close()
-        return response_id
+        return response.data[0]['id']
     
     def get_responses(self, rfq_id: int) -> List[Dict]:
         """Get all responses for an RFQ"""
-        conn = self._get_connection()
-        cursor = conn.cursor()
-        cursor.execute(
-            """SELECT r.*, v.name as vendor_name, v.email as vendor_email
-               FROM responses r
-               JOIN vendors v ON r.vendor_id = v.id
-               WHERE v.rfq_id = ?
-               ORDER BY r.received_at DESC""",
-            (rfq_id,)
-        )
-        rows = cursor.fetchall()
-        conn.close()
-        return [dict(row) for row in rows]
-    
-    # ========================================================================
-    # QUOTATION OPERATIONS
-    # ========================================================================
-    
-    def add_quotations(self, response_id: int, quotations: List[Dict]):
-        """Add parsed quotation items"""
-        conn = self._get_connection()
-        cursor = conn.cursor()
+        # Get vendors for this RFQ
+        vendors_response = self.supabase.table('vendors').select('id').eq('rfq_id', rfq_id).execute()
+        vendor_ids = [v['id'] for v in vendors_response.data]
         
-        for quote in quotations:
-            cursor.execute(
-                """INSERT INTO quotations (response_id, item_name, price, unit, notes)
-                   VALUES (?, ?, ?, ?, ?)""",
-                (response_id, quote.get('item_name', ''), 
-                 quote.get('price', 0), quote.get('unit', ''), 
-                 quote.get('notes', ''))
-            )
-        conn.commit()
-        conn.close()
+        if not vendor_ids:
+            return []
+        
+        # Get responses for these vendors
+        responses = self.supabase.table('responses').select("*").in_('vendor_id', vendor_ids).execute()
+        return responses.data
+    
+    def add_quotation(self, response_id: int, item_name: str, 
+                      price: str, unit: str, notes: str) -> int:
+        """Add a quotation line item"""
+        response = self.supabase.table('quotations').insert({
+            'response_id': response_id,
+            'item_name': item_name,
+            'price': price,
+            'unit': unit,
+            'notes': notes
+        }).execute()
+        
+        return response.data[0]['id']
     
     def get_quotations(self, response_id: int) -> List[Dict]:
-        """Get quotations for a response"""
-        conn = self._get_connection()
-        cursor = conn.cursor()
-        cursor.execute("SELECT * FROM quotations WHERE response_id = ?", (response_id,))
-        rows = cursor.fetchall()
-        conn.close()
-        return [dict(row) for row in rows]
-    
-    # ========================================================================
-    # SETTINGS OPERATIONS
-    # ========================================================================
-    
-    def save_setting(self, key: str, value: str, encrypted: bool = False):
-        """Save or update a setting"""
-        conn = self._get_connection()
-        cursor = conn.cursor()
-        
-        updated_at = datetime.now().isoformat()
-        cursor.execute(
-            """INSERT OR REPLACE INTO settings (key, value, encrypted, updated_at)
-               VALUES (?, ?, ?, ?)""",
-            (key, value, 1 if encrypted else 0, updated_at)
-        )
-        conn.commit()
-        conn.close()
-    
-    def get_setting(self, key: str) -> Optional[str]:
-        """Get a setting value"""
-        conn = self._get_connection()
-        cursor = conn.cursor()
-        cursor.execute("SELECT value FROM settings WHERE key = ?", (key,))
-        row = cursor.fetchone()
-        conn.close()
-        return row['value'] if row else None
+        """Get all quotations for a response"""
+        response = self.supabase.table('quotations').select("*").eq('response_id', response_id).execute()
+        return response.data
