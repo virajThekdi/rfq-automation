@@ -170,14 +170,19 @@ def verify_environment():
     print(f"  • EMAIL_PASSWORD: {'✅ Found' if os.getenv('EMAIL_PASSWORD') else '❌ Missing'}")
     print(f"  • SUPABASE_URL: {'✅ Found' if os.getenv('SUPABASE_URL') else '❌ Missing'}")
     print(f"  • SUPABASE_KEY: {'✅ Found' if os.getenv('SUPABASE_KEY') else '❌ Missing'}")
-    print(f"  • GEMINI_API_KEY: {'✅ Found' if os.getenv('GEMINI_API_KEY') else '❌ Missing'}")
+    print(f"  • GEMINI_API_KEY: {'✅ Found' if os.getenv('GEMINI_API_KEY') else '⚠️ Missing (AI parsing disabled)'}")
     
+    # Only these are strictly required
     missing = []
     if not os.getenv('EMAIL_ADDRESS'): missing.append('EMAIL_ADDRESS')
     if not os.getenv('EMAIL_PASSWORD'): missing.append('EMAIL_PASSWORD')
     if not os.getenv('SUPABASE_URL'): missing.append('SUPABASE_URL')
     if not os.getenv('SUPABASE_KEY'): missing.append('SUPABASE_KEY')
-    if not os.getenv('GEMINI_API_KEY'): missing.append('GEMINI_API_KEY')
+    
+    # GEMINI_API_KEY is optional - system can work without it (Excel/HTML parsing only)
+    if not os.getenv('GEMINI_API_KEY'):
+        print("  ℹ️ Note: Without GEMINI_API_KEY, only Excel and HTML quotations can be parsed")
+        print("          PDF and plain text emails will not be processed")
     
     if missing:
         print(f"\n❌ ERROR: Missing required environment variables: {', '.join(missing)}")
