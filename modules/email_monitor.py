@@ -1,12 +1,14 @@
 """
 email_monitor.py
 ================
-PURPOSE: Monitor Gmail inbox for vendor replies
+PURPOSE: Monitor email inbox for vendor replies
 USED BY: app.py (main monitoring thread)
 DEPENDS ON: imaplib, email (Python standard library), BeautifulSoup4
 
+SUPPORTS: Gmail, Outlook, Yahoo, and any IMAP-enabled email provider
+
 This module:
-1. Connects to Gmail via IMAP
+1. Connects to any IMAP server via configurable settings
 2. Searches for emails from vendors
 3. Extracts HTML content
 4. Parses HTML tables
@@ -21,26 +23,104 @@ from typing import List, Dict, Optional, Tuple  # For type hints
 from bs4 import BeautifulSoup  # For parsing HTML
 import re  # For text cleaning
 from difflib import SequenceMatcher  # For fuzzy string matching
+import os  # For environment variables
+
+
+# Email provider configurations
+EMAIL_PROVIDERS = {
+    "gmail": {
+        "imap_server": "imap.gmail.com",
+        "imap_port": 993,
+        "name": "Gmail"
+    },
+    "outlook": {
+        "imap_server": "outlook.office365.com",
+        "imap_port": 993,
+        "name": "Outlook/Office 365"
+    },
+    "hotmail": {
+        "imap_server": "imap-mail.outlook.com",
+        "imap_port": 993,
+        "name": "Hotmail"
+    },
+    "yahoo": {
+        "imap_server": "imap.mail.yahoo.com",
+        "imap_port": 993,
+        "name": "Yahoo Mail"
+    },
+    "custom": {
+        "imap_server": None,  # Set via environment variable
+        "imap_port": 993,
+        "name": "Custom IMAP Server"
+    }
+}
+
+
+def get_imap_settings() -> Dict[str, any]:
+    """
+    Get IMAP settings from environment variables or use defaults.
+    
+    Environment Variables:
+        EMAIL_PROVIDER: gmail, outlook, hotmail, yahoo, or custom
+        IMAP_SERVER: Custom IMAP server (if EMAIL_PROVIDER=custom)
+        IMAP_PORT: Custom IMAP port (default: 993)
+    
+    Returns:
+        Dictionary with imap_server, imap_port, provider_name
+    """
+    # Get provider from environment (default: gmail)
+    provider = os.getenv('EMAIL_PROVIDER', 'gmail').lower()
+    
+    if provider in EMAIL_PROVIDERS:
+        config = EMAIL_PROVIDERS[provider].copy()
+        
+        # For custom provider, check environment variables
+        if provider == "custom":
+            config["imap_server"] = os.getenv('IMAP_SERVER')
+            config["imap_port"] = int(os.getenv('IMAP_PORT', '993'))
+            
+            if not config["imap_server"]:
+                raise ValueError(
+                    "EMAIL_PROVIDER is set to 'custom' but IMAP_SERVER is not configured. "
+                    "Please set IMAP_SERVER environment variable."
+                )
+        else:
+            # Allow override even for known providers
+            if os.getenv('IMAP_SERVER'):
+                config["imap_server"] = os.getenv('IMAP_SERVER')
+            if os.getenv('IMAP_PORT'):
+                config["imap_port"] = int(os.getenv('IMAP_PORT'))
+        
+        return config
+    else:
+        raise ValueError(
+            f"Unknown EMAIL_PROVIDER: {provider}. "
+            f"Supported: {', '.join(EMAIL_PROVIDERS.keys())}"
+        )
 
 
 def connect_to_inbox(email_address: str, password: str) -> Optional[imaplib.IMAP4_SSL]:
     """
-    Connect to Gmail inbox via IMAP.
+    Connect to email inbox via IMAP (supports Gmail, Outlook, Yahoo, etc.).
     
     Args:
-        email_address: Gmail address
-        password: Gmail App Password
+        email_address: Email address
+        password: Email password or App Password
         
     Returns:
         IMAP connection object or None if failed
     """
     
     try:
-        # Gmail IMAP settings
-        imap_server = "imap.gmail.com"
-        imap_port = 993  # SSL port
+        # Get IMAP settings (configurable via environment)
+        imap_config = get_imap_settings()
+        imap_server = imap_config["imap_server"]
+        imap_port = imap_config["imap_port"]
+        provider_name = imap_config["name"]
         
-        # Connect to Gmail
+        print(f"[INFO] Connecting to {provider_name} ({imap_server}:{imap_port})...")
+        
+        # Connect to IMAP server
         mail = imaplib.IMAP4_SSL(imap_server, imap_port)
         
         # Login
@@ -49,10 +129,14 @@ def connect_to_inbox(email_address: str, password: str) -> Optional[imaplib.IMAP
         # Select inbox folder
         mail.select("INBOX")
         
+        print(f"[✓] Connected to {provider_name} inbox successfully")
+        
         return mail
         
     except imaplib.IMAP4.error as e:
         print(f"[✗] IMAP authentication error: {str(e)}")
+        print(f"[HINT] For Outlook/Hotmail, ensure IMAP is enabled in account settings")
+        print(f"[HINT] For Gmail, use App Passwords (not your regular password)")
         return None
         
     except Exception as e:
@@ -672,7 +756,7 @@ def check_new_responses(email_address: str, password: str, rfq_id: int,
     MAIN FUNCTION: Check inbox for vendor responses and process them.
     
     This is the COMPLETE INTEGRATION that ties everything together:
-    1. Connect to inbox
+    1. Connect to inbox (Gmail, Outlook, Yahoo, etc.)
     2. Get vendor list from database
     3. Search for replies from each vendor
     4. Extract email body AND attachments (Excel/PDF/etc.)
@@ -682,8 +766,8 @@ def check_new_responses(email_address: str, password: str, rfq_id: int,
     8. Update vendor status
     
     Args:
-        email_address: Gmail address to check
-        password: Gmail App Password
+        email_address: Email address to check
+        password: Email password or App Password
         rfq_id: RFQ ID to check responses for
         db_manager: DatabaseManager instance
         ai_parser: AI Parser module
@@ -733,7 +817,7 @@ def check_new_responses(email_address: str, password: str, rfq_id: int,
             print(f"[INFO]   - {v['email']}")
         
         # Step 3: Connect to inbox
-        print("[INFO] Connecting to Gmail inbox...")
+        print("[INFO] Connecting to email inbox...")
         mail = connect_to_inbox(email_address, password)
         
         if not mail:
