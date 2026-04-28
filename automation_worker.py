@@ -4,6 +4,11 @@ RFQ Automation Worker - 24/7 Background Service
 
 This script runs automatically via GitHub Actions (or other schedulers)
 to check emails and send follow-ups without manual intervention.
+
+Usage:
+    python automation_worker.py              # Run both tasks
+    python automation_worker.py check-emails # Check emails only
+    python automation_worker.py send-followups # Send follow-ups only
 """
 
 import sys
@@ -47,14 +52,14 @@ def check_emails():
         if not sender_email or not sender_password:
             print("❌ ERROR: Email credentials not found in environment")
             print("💡 Make sure EMAIL_ADDRESS and EMAIL_PASSWORD are set in GitHub Actions secrets")
-            return
+            return False
         
         # Get all active RFQs
         active_rfqs = db.get_active_rfqs()
         
         if not active_rfqs:
             print("ℹ️ No active RFQs found")
-            return
+            return True
         
         print(f"📊 Found {len(active_rfqs)} active RFQ(s)")
         
@@ -91,11 +96,14 @@ def check_emails():
             print(f"\n✅ Email check complete: {total_new_responses} new response(s) found")
         else:
             print(f"\nℹ️ Email check complete: No new responses")
+        
+        return True
             
     except Exception as e:
         print(f"❌ Email check failed: {e}")
         import traceback
         traceback.print_exc()
+        return False
 
 
 def send_followups():
@@ -114,7 +122,7 @@ def send_followups():
         if not sender_email or not sender_password:
             print("❌ ERROR: Email credentials not found in environment")
             print("💡 Make sure EMAIL_ADDRESS and EMAIL_PASSWORD are set in GitHub Actions secrets")
-            return
+            return False
         
         # Check all active RFQs for follow-ups
         results = check_all_active_rfqs(
@@ -135,21 +143,20 @@ def send_followups():
                     print(f"      • Sent to: {', '.join(rfq_result['result']['vendors_sent'])}")
         else:
             print(f"\nℹ️ Follow-up check complete: No follow-ups needed at this time")
+        
+        return True
             
     except Exception as e:
         print(f"❌ Follow-up check failed: {e}")
         import traceback
         traceback.print_exc()
+        return False
 
 
-def main():
-    """Main automation worker"""
-    print("\n" + "="*70)
-    print("🤖 RFQ AUTOMATION WORKER STARTED")
-    print("="*70)
-    
-    # Verify environment
+def verify_environment():
+    """Verify all required environment variables are present"""
     print("\n🔧 Checking environment...")
+    print(f"  • EMAIL_PROVIDER: {os.getenv('EMAIL_PROVIDER', 'gmail')} (default: gmail)")
     print(f"  • EMAIL_ADDRESS: {'✅ Found' if os.getenv('EMAIL_ADDRESS') else '❌ Missing'}")
     print(f"  • EMAIL_PASSWORD: {'✅ Found' if os.getenv('EMAIL_PASSWORD') else '❌ Missing'}")
     print(f"  • SUPABASE_URL: {'✅ Found' if os.getenv('SUPABASE_URL') else '❌ Missing'}")
@@ -166,15 +173,54 @@ def main():
     if missing:
         print(f"\n❌ ERROR: Missing required environment variables: {', '.join(missing)}")
         print("💡 Make sure all secrets are configured in GitHub Actions settings")
+        return False
+    
+    return True
+
+
+def main():
+    """Main automation worker"""
+    print("\n" + "="*70)
+    print("🤖 RFQ AUTOMATION WORKER STARTED")
+    print("="*70)
+    
+    # Verify environment first
+    if not verify_environment():
         sys.exit(1)
     
-    # Run both tasks
-    check_emails()
-    send_followups()
+    # Parse command-line arguments
+    task = sys.argv[1] if len(sys.argv) > 1 else 'all'
+    
+    success = True
+    
+    if task == 'check-emails':
+        # Run email check only
+        success = check_emails()
+        
+    elif task == 'send-followups':
+        # Run follow-up check only
+        success = send_followups()
+        
+    elif task == 'all':
+        # Run both tasks
+        email_success = check_emails()
+        followup_success = send_followups()
+        success = email_success and followup_success
+        
+    else:
+        print(f"\n❌ ERROR: Unknown task '{task}'")
+        print("💡 Valid tasks: check-emails, send-followups, all (or no argument)")
+        sys.exit(1)
     
     print("\n" + "="*70)
-    print("✅ AUTOMATION WORKER COMPLETED")
-    print("="*70 + "\n")
+    if success:
+        print("✅ AUTOMATION WORKER COMPLETED SUCCESSFULLY")
+        print("="*70 + "\n")
+        sys.exit(0)
+    else:
+        print("⚠️ AUTOMATION WORKER COMPLETED WITH ERRORS")
+        print("="*70 + "\n")
+        sys.exit(1)
 
 
 if __name__ == "__main__":

@@ -25,29 +25,25 @@ jobs:
         python -m pip install --upgrade pip
         pip install google-generativeai beautifulsoup4 pandas openpyxl python-dotenv PyPDF2 supabase
     
-    - name: Check for new email responses
+    - name: Run RFQ automation (check emails + send follow-ups)
       env:
+        EMAIL_PROVIDER: ${{ secrets.EMAIL_PROVIDER }}
         EMAIL_ADDRESS: ${{ secrets.EMAIL_ADDRESS }}
         EMAIL_PASSWORD: ${{ secrets.EMAIL_PASSWORD }}
         GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
         SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
         SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
       run: |
-        echo "🔍 Checking for new vendor responses..."
-        python automation_worker.py check-emails
-    
-    - name: Send follow-up reminders
-      env:
-        EMAIL_ADDRESS: ${{ secrets.EMAIL_ADDRESS }}
-        EMAIL_PASSWORD: ${{ secrets.EMAIL_PASSWORD }}
-        SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
-        SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
-      run: |
-        echo "📧 Sending follow-up reminders..."
-        python automation_worker.py send-followups
+        echo "🤖 Starting RFQ automation worker..."
+        echo "📧 Email Provider: ${EMAIL_PROVIDER:-gmail (default)}"
+        echo "👤 Email Address: ${EMAIL_ADDRESS}"
+        echo ""
+        python automation_worker.py
     
     - name: Report status
       if: always()
       run: |
+        echo ""
         echo "✅ Automation cycle completed"
-        echo "Next run in 30 minutes"
+        echo "⏰ Next run in 30 minutes"
+        echo "📅 Completed at: $(date)"
