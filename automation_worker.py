@@ -23,6 +23,7 @@ load_dotenv()
 from database.db_manager import DatabaseManager
 from modules.email_monitor import check_new_responses
 from modules.followup_manager import check_all_active_rfqs
+from modules import ai_parser
 
 
 def get_credential(key):
@@ -48,11 +49,15 @@ def check_emails():
         # Get email credentials from environment (GitHub Actions secrets)
         sender_email = get_credential('EMAIL_ADDRESS')
         sender_password = get_credential('EMAIL_PASSWORD')
+        gemini_api_key = get_credential('GEMINI_API_KEY')
         
         if not sender_email or not sender_password:
             print("❌ ERROR: Email credentials not found in environment")
             print("💡 Make sure EMAIL_ADDRESS and EMAIL_PASSWORD are set in GitHub Actions secrets")
             return False
+        
+        if not gemini_api_key:
+            print("⚠️ WARNING: GEMINI_API_KEY not found - AI parsing will be limited")
         
         # Get all active RFQs
         active_rfqs = db.get_active_rfqs()
@@ -78,19 +83,23 @@ def check_emails():
             
             print(f"    ⏳ Checking {len(pending)} pending vendor(s)...")
             
-            # Check for new responses
-            for vendor in pending:
-                result = check_new_responses(
-                    db_manager=db,
-                    rfq_id=rfq['id'],
-                    vendor_email=vendor['email'],
-                    email_address=sender_email,
-                    email_password=sender_password
-                )
-                
-                if result['new_responses'] > 0:
-                    total_new_responses += result['new_responses']
-                    print(f"    📧 New response from {vendor['name']}!")
+            # Check for new responses for this RFQ
+            # NOTE: check_new_responses() checks ALL pending vendors for the RFQ automatically
+            result = check_new_responses(
+                email_address=sender_email,
+                password=sender_password,
+                rfq_id=rfq['id'],
+                db_manager=db,
+                ai_parser=ai_parser,
+                gemini_api_key=gemini_api_key or ""
+            )
+            
+            if result['new_responses'] > 0:
+                total_new_responses += result['new_responses']
+                print(f"    📧 {result['new_responses']} new response(s) found!")
+                if result.get('processed'):
+                    for vendor_email in result['processed']:
+                        print(f"      • {vendor_email}")
         
         if total_new_responses > 0:
             print(f"\n✅ Email check complete: {total_new_responses} new response(s) found")
