@@ -24,74 +24,26 @@ except ImportError:
 
 
 def check_followups_needed(db_manager, rfq_id: int) -> List[Dict]:
-    """
-    Check which vendors need follow-up emails.
-    
-    Logic:
-    - Vendor must be "pending" (not responded)
-    - RFQ must not be expired/completed
-    - Must have follow-ups enabled (followup_count > 0)
-    - Vendor must not have exceeded max follow-ups
-    - Enough time must have passed since last email
-    
-    Args:
-        db_manager: DatabaseManager instance
-        rfq_id: RFQ ID to check
-        
-    Returns:
-        List of vendor dicts that need follow-ups
-    """
-    
-    # Get RFQ details
     rfq = db_manager.get_rfq(rfq_id)
-    
-    if not rfq:
+    if not rfq or rfq['followup_count'] <= 0 or rfq['status'] != 'active':
         return []
-    
-    # Check if RFQ has follow-ups enabled
-    if rfq['followup_count'] <= 0:
-        return []
-    
-    # Check if RFQ is still active
-    if rfq['status'] != 'active':
-        return []
-    
-    # Check if deadline has passed
     deadline = datetime.fromisoformat(rfq['deadline_time'])
     now = datetime.now()
-    
     if now > deadline:
-        return []  # Don't send follow-ups after deadline
-    
-    # Get all pending vendors
+        return []
     vendors = db_manager.get_vendors(rfq_id)
     pending_vendors = [v for v in vendors if v['response_status'] == 'pending']
-    
-    # Filter vendors who need follow-ups
     vendors_needing_followup = []
-    
     for vendor in pending_vendors:
-        # Check if vendor has exceeded max follow-ups
         if vendor['followup_sent_count'] >= rfq['followup_count']:
-            continue  # Already sent max follow-ups
-        
-        # Calculate when next follow-up should be sent
-        if vendor['last_followup_at']:
-            # Use last follow-up time as reference
-            last_contact = datetime.fromisoformat(vendor['last_followup_at'])
-        else:
-            # Use original send time as reference
-            last_contact = datetime.fromisoformat(vendor['sent_at'])
-        
-        # Calculate hours since last contact
+            continue
+        last_contact = datetime.fromisoformat(
+            vendor['last_followup_at'] if vendor['last_followup_at'] else vendor['sent_at']
+        )
         hours_since = (now - last_contact).total_seconds() / 3600
-        
-        # Check if enough time has passed (use followup_interval from RFQ)
         if hours_since >= rfq['followup_interval']:
             vendors_needing_followup.append(vendor)
-    
     return vendors_needing_followup
-
 
 def generate_followup_email(rfq: Dict, vendor: Dict, items: List[Dict], 
                            followup_number: int) -> tuple:
